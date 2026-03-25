@@ -5,3 +5,34 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .agent/
+
+# Data files (large, not for repo)
+data/
+data_*/
+results/
+neurojax/
+
+# Unrelated scripts and artifacts
+academy_01_srm_result.png
+joint_model_*.png
+animal_pipeline/
+benchmark_broccoli.py
+check_geometry.py
+check_longitudinal_candidate.py
+demo_*.py
+download_*.py
+examples/
+fetch_metadata.py
+forward_model.py
+grand_challenge_nsd.py
+ingest_*.py
+inspect_*.py
+load_*.py
+pipeline_mouse_*.py
+prototype_*.py
+symmetrical_fusion.py
+verify_forward_model.py
+visualize_mouse_results.py
+data_chbmp_repo/
+data_meta/
+data_temp/
