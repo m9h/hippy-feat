@@ -1,0 +1,32 @@
+# MindEye RT Preprocessing Variant Comparison
+# Based on NVIDIA NGC PyTorch container for DGX Spark (aarch64)
+FROM nvcr.io/nvidia/pytorch:25.03-py3
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# JAX with CUDA 12 (NGC container already has CUDA libs)
+RUN pip install --no-cache-dir \
+    "jax[cuda12]>=0.9" \
+    signax>=0.2 \
+    trackio>=0.19 \
+    nibabel \
+    hypothesis \
+    pytest \
+    pandas
+
+# Copy jaxoccoli library
+COPY jaxoccoli/ /workspace/jaxoccoli/
+
+# Copy scripts
+COPY scripts/ /workspace/scripts/
+
+# Working directory
+WORKDIR /workspace
+
+# Verify GPU access on build
+RUN python3 -c "import jax; assert jax.default_backend() == 'gpu', f'Expected gpu, got {jax.default_backend()}'"
+
+# Default: run benchmark
+ENTRYPOINT ["python3", "scripts/benchmark_variants.py"]
+CMD ["--variants", "a_baseline", "c_pervoxel_hrf", "d_bayesian", "--session", "ses-06", "--runs", "1"]
