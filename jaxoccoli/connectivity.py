@@ -1,3 +1,28 @@
+"""Sliding-window and dynamic functional connectivity estimation.
+
+Provides both a stateful class (``SlidingWindowConnectivity``) for real-time
+streaming use and pure-functional helpers for offline analysis.  All
+correlation/covariance estimation delegates to :mod:`jaxoccoli.covariance`
+so that variance-aware extensions (weighted, disattenuated, posterior)
+compose naturally.
+
+Key functions:
+    - ``sliding_window_corr`` -- pure-functional sliding-window Pearson
+      correlation over a (C, T) time series.
+    - ``dynamic_connectivity`` -- generalised version accepting any
+      estimator ('corr' or 'cov') with extra keyword arguments.
+    - ``sample_nonoverlapping_windows`` / ``sample_overlapping_windows``
+      -- stochastic window sampling for bootstrap or null-model analyses.
+
+The ``SlidingWindowConnectivity`` class wraps the same logic in a
+stateful API suitable for real-time neurofeedback loops where a new
+TR arrives each iteration and the buffer is shifted in-place.
+
+References:
+    Allen et al. (2014) "Tracking whole-brain connectivity dynamics in
+    the resting state" -- sliding-window dFC methodology.
+"""
+
 import jax
 import jax.numpy as jnp
 from functools import partial
@@ -6,19 +31,37 @@ from .covariance import corr, cov
 
 
 class SlidingWindowConnectivity:
+    """Stateful sliding-window Pearson correlation for real-time streaming.
+
+    Maintains a fixed-length buffer of shape ``(n_rois, window_size)``
+    and exposes JIT-compiled methods to compute the correlation matrix
+    for the current window or to shift the buffer by one TR and
+    recompute in a single call.
+
+    For offline (whole-session) analysis prefer the pure-functional
+    :func:`sliding_window_corr` or :func:`dynamic_connectivity`.
+
+    Args:
+        n_rois: Number of ROIs / channels (C).
+        window_size: Number of timepoints in the sliding window.
     """
-    Real-time sliding window connectivity (Correlation Matrix).
-    Optimized for JAX.
-    """
+
     def __init__(self, n_rois, window_size):
         self.n_rois = n_rois
         self.window_size = window_size
         
     @partial(jax.jit, static_argnums=(0,))
     def compute_correlation(self, data_window):
-        """
-        Compute Pearson correlation matrix for the given window.
-        data_window: (N_ROIs, Window_Size)
+        """Compute the Pearson correlation matrix for a data window.
+
+        Z-scores each ROI along the time axis and computes the
+        normalised cross-product matrix.
+
+        Args:
+            data_window: (n_rois, window_size) time series block.
+
+        Returns:
+            (n_rois, n_rois) Pearson correlation matrix.
         """
         # 1. Z-score normalization along time (axis 1)
         mean = jnp.mean(data_window, axis=1, keepdims=True)
@@ -37,10 +80,19 @@ class SlidingWindowConnectivity:
 
     @partial(jax.jit, static_argnums=(0,))
     def update_and_compute(self, current_buffer, new_data):
-        """
-        Updates the buffer (shift left) and calculates connectivity.
-        current_buffer: (N_ROIs, Window_Size)
-        new_data: (N_ROIs,) or (N_ROIs, 1)
+        """Shift the buffer by one TR and recompute the correlation matrix.
+
+        Drops the oldest timepoint, appends *new_data*, and returns both
+        the updated buffer and the new correlation matrix.
+
+        Args:
+            current_buffer: (n_rois, window_size) current sliding window.
+            new_data: (n_rois,) or (n_rois, 1) new TR observation.
+
+        Returns:
+            Tuple of (updated_buffer, corr_matrix) where
+            *updated_buffer* has shape (n_rois, window_size) and
+            *corr_matrix* has shape (n_rois, n_rois).
         """
         # Shift
         # Concatenate: buffer[:, 1:] + new_data

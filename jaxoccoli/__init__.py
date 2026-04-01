@@ -1,3 +1,42 @@
+"""GPU-accelerated fMRI preprocessing and differentiable connectivity in JAX.
+
+jaxoccoli (JAX Operations for Connectivity, Covariance, and Linear Imaging)
+is the core library of hippy-feat.  It provides a modular collection of
+pure-JAX primitives for the full fMRI analysis pipeline:
+
+    1. **I/O** -- NIfTI load/save with automatic JAX array conversion.
+    2. **Spatial** -- Bilateral filtering, Gaussian/spherical convolution.
+    3. **Motion** -- Rigid-body registration (Adam and Gauss-Newton solvers).
+    4. **GLM** -- General Linear Model with Cholesky-accelerated OLS.
+    5. **Bayesian beta** -- Conjugate and NUTS-based single-trial estimation
+       with variance propagation (addresses Rissman/Mumford gap).
+    6. **Statistics** -- Voxelwise t/F-statistics and p-values.
+    7. **Permutation** -- Max-T permutation testing with batched vmap.
+    8. **Covariance** -- Empirical, partial, and posterior-marginalised
+       covariance/correlation with variance-aware extensions.
+    9. **Matrix** -- SPD manifold operations, Cholesky inversion, Toeplitz.
+   10. **Fourier** -- Hilbert transform, analytic signal, frequency filtering.
+   11. **Graph** -- Laplacian, spectral embedding, Chebyshev filtering,
+       modularity, sparse message passing.
+   12. **Interpolation** -- Linear, spectral, and hybrid temporal interpolation.
+   13. **Learnable** -- vbjax-style make_*() factories for learnable atlases,
+       covariance, frequency filters, and manifold constraints.
+   14. **Losses** -- Differentiable losses for connectivity, modularity,
+       reliability-weighted objectives, and information-theoretic measures.
+   15. **Connectivity** -- Sliding-window and dynamic functional connectivity.
+   16. **Transport** -- Sinkhorn, Wasserstein, and Gromov-Wasserstein
+       distances for parcellation-free FC comparison.
+   17. **Signatures** -- Rough-path log-signatures for effective connectivity
+       and lead-lag (Levy area) extraction via signax.
+   18. **Fusion** -- Joint EEG-fMRI fusion with a differentiable balloon model.
+
+Design philosophy:
+    - Pure functions, JIT/vmap/grad compatible, no Equinox dependency.
+    - vbjax-style factory pattern: ``make_*() -> (params, forward_fn)``.
+    - Bayesian variance propagation throughout the pipeline so that
+      downstream connectivity estimates account for single-trial uncertainty.
+"""
+
 from .glm import GeneralLinearModel
 from .permutation import PermutationTest
 from .stats import compute_t_stat, compute_f_stat

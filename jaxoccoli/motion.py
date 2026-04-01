@@ -1,3 +1,32 @@
+"""Rigid-body motion correction for 3-D volumes.
+
+Implements 6-DOF (3 translations + 3 Euler-angle rotations) registration
+of a moving volume to a template, analogous to MCFLIRT (FSL) or BROCCOLI's
+GPU motion correction, but fully differentiable via JAX autodiff.
+
+Two solvers are provided:
+
+    - ``RigidBodyRegistration`` -- first-order Adam optimiser (simple,
+      ~50 iterations).  Good baseline and real-time fallback.
+    - ``GaussNewtonRegistration`` -- second-order Gauss-Newton solver
+      with Levenberg-Marquardt damping (~5-15 iterations).  Uses JVP
+      forward-mode columns to build J'J without materialising the full
+      Jacobian, keeping memory O(N) rather than O(6N).
+
+Both classes precompute the homogeneous coordinate grid once and expose
+a ``register_volume`` method that returns ``(best_params, registered_image)``.
+
+Spatial resampling uses ``jax.scipy.ndimage.map_coordinates`` with
+first-order (linear) interpolation and nearest-boundary extension.
+
+References:
+    Jenkinson et al. (2002) "Improved optimization for the robust and
+    accurate linear registration and motion correction of brain images"
+    (MCFLIRT).
+    Eklund et al. (2014) "BROCCOLI: Software for fast fMRI analysis on
+    many-core CPUs and GPUs."
+"""
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.ndimage import map_coordinates
@@ -28,10 +57,21 @@ def _precompute_grid(vol_shape, center):
 
 
 class RigidBodyRegistration:
+    """First-order (Adam) rigid-body motion correction.
+
+    Optimises 6 parameters [tx, ty, tz, rx, ry, rz] to minimise
+    the mean squared error between a template and the transformed
+    moving volume using ``optax.adam``.  The optimisation loop is
+    unrolled with ``jax.lax.scan`` so the entire registration is
+    a single JIT-compiled call.
+
+    Args:
+        template: (X, Y, Z) reference volume.
+        vol_shape: Tuple (X, Y, Z) spatial dimensions.
+        step_size: Adam learning rate (default 0.1).
+        n_iter: Number of optimisation iterations (default 50).
     """
-    JAX-based Rigid Body Motion Correction (6 DOF).
-    Optimizes 3 rotations and 3 translations per volume.
-    """
+
     def __init__(self, template, vol_shape, step_size=0.1, n_iter=50):
         self.template = template # (X, Y, Z)
         self.vol_shape = vol_shape # (X, Y, Z)
@@ -43,12 +83,20 @@ class RigidBodyRegistration:
     
     @staticmethod
     def make_affine_matrix(params):
-        """
-        Constructs a 4x4 affine matrix from 6 params: [tx, ty, tz, rx, ry, rz]
-        rx, ry, rz are Euler angles in radians.
+        """Construct a 4x4 affine matrix from 6 rigid-body parameters.
+
+        Composition order is T @ Rz @ Ry @ Rx (extrinsic XYZ convention).
+
+        Args:
+            params: (6,) array [tx, ty, tz, rx, ry, rz] where
+                translations are in voxel units and rotations are
+                Euler angles in radians.
+
+        Returns:
+            (4, 4) homogeneous affine matrix.
         """
         tx, ty, tz, rx, ry, rz = params
-        
+
         # Rotation X
         Rx = jnp.array([
             [1, 0, 0, 0],
@@ -56,7 +104,7 @@ class RigidBodyRegistration:
             [0, jnp.sin(rx), jnp.cos(rx), 0],
             [0, 0, 0, 1]
         ])
-        
+
         # Rotation Y
         Ry = jnp.array([
             [jnp.cos(ry), 0, jnp.sin(ry), 0],
@@ -64,7 +112,7 @@ class RigidBodyRegistration:
             [-jnp.sin(ry), 0, jnp.cos(ry), 0],
             [0, 0, 0, 1]
         ])
-        
+
         # Rotation Z
         Rz = jnp.array([
             [jnp.cos(rz), -jnp.sin(rz), 0, 0],
@@ -72,7 +120,7 @@ class RigidBodyRegistration:
             [0, 0, 1, 0],
             [0, 0, 0, 1]
         ])
-        
+
         # Translation
         T = jnp.array([
             [1, 0, 0, tx],
@@ -80,14 +128,24 @@ class RigidBodyRegistration:
             [0, 0, 1, tz],
             [0, 0, 0, 1]
         ])
-        
+
         # Combined: T @ Rz @ Ry @ Rx
         return T @ Rz @ Ry @ Rx
 
     @partial(jax.jit, static_argnums=(0,))
     def apply_transform(self, image, params):
-        """
-        Applies rigid transform to the image using interpolation.
+        """Resample *image* under the rigid transform defined by *params*.
+
+        Builds the output coordinate grid, maps each output voxel back
+        to source space via the inverse affine, and interpolates with
+        first-order (linear) interpolation.
+
+        Args:
+            image: (X, Y, Z) 3-D volume to transform.
+            params: (6,) rigid-body parameters [tx, ty, tz, rx, ry, rz].
+
+        Returns:
+            (X, Y, Z) resampled volume.
         """
         matrix = self.make_affine_matrix(params)
         
@@ -137,17 +195,33 @@ class RigidBodyRegistration:
 
     @partial(jax.jit, static_argnums=(0,))
     def loss_fn(self, params, moving_image):
-        """
-        Mean Squared Error loss between Template and Transformed Moving Image.
+        """Mean squared error between the template and the transformed moving image.
+
+        Args:
+            params: (6,) rigid-body parameters.
+            moving_image: (X, Y, Z) volume to register.
+
+        Returns:
+            Scalar MSE loss.
         """
         transformed = self.apply_transform(moving_image, params)
         return jnp.mean((self.template - transformed) ** 2)
 
     @partial(jax.jit, static_argnums=(0,))
     def register_volume(self, moving_image, init_params=None):
-        """
-        Effectively optimizes the 6 parameters.
-        Returns: (best_params, registered_image)
+        """Register *moving_image* to the template via Adam optimisation.
+
+        Runs ``n_iter`` gradient-descent steps using ``optax.adam``,
+        unrolled with ``jax.lax.scan``.
+
+        Args:
+            moving_image: (X, Y, Z) volume to align.
+            init_params: Optional (6,) initial parameters.
+                Defaults to zeros (identity transform).
+
+        Returns:
+            Tuple of (best_params, registered_image) where
+            *best_params* is (6,) and *registered_image* is (X, Y, Z).
         """
         if init_params is None:
             init_params = jnp.zeros(6) # Identity
@@ -171,24 +245,26 @@ class RigidBodyRegistration:
 
 
 class GaussNewtonRegistration:
-    """
-    JAX-based Rigid Body Motion Correction (6 DOF) using Gauss-Newton
-    optimization.
+    """Second-order (Gauss-Newton) rigid-body motion correction.
 
-    Converges in 5-15 iterations instead of 50 Adam steps by computing
-    the analytic Jacobian of the residual vector with respect to the
-    6 rigid-body parameters and solving the normal equations:
+    Converges in 5-15 iterations instead of ~50 Adam steps by solving
+    the damped normal equations at each step:
 
-        delta = (J'J)^{-1} J' r
+        delta = (J'J + damping * I)^{-1} J' r
 
-    The output coordinate grid is precomputed once in __init__ rather
-    than rebuilt every apply_transform call.
+    Memory-efficient implementation:
+        - J'r is obtained via a single VJP (backward pass).
+        - J'J is assembled from 6 JVP (forward-mode) columns, avoiding
+          materialisation of the full (N, 6) Jacobian.
 
-    Parameters match RigidBodyRegistration:
-        template: (X, Y, Z) reference volume
-        vol_shape: tuple (X, Y, Z)
-        n_iter: max Gauss-Newton iterations (default 10)
-        damping: Levenberg-Marquardt damping for (J'J + damping*I) (default 1e-4)
+    The output coordinate grid is precomputed once in ``__init__``
+    and reused across iterations and volumes.
+
+    Args:
+        template: (X, Y, Z) reference volume.
+        vol_shape: Tuple (X, Y, Z) spatial dimensions.
+        n_iter: Maximum Gauss-Newton iterations (default 10).
+        damping: Levenberg-Marquardt damping lambda (default 1e-4).
     """
 
     def __init__(self, template, vol_shape, n_iter=10, damping=1e-4):
@@ -203,9 +279,15 @@ class GaussNewtonRegistration:
 
     @staticmethod
     def make_affine_matrix(params):
-        """
-        Constructs a 4x4 affine matrix from 6 params: [tx, ty, tz, rx, ry, rz].
-        Identical to RigidBodyRegistration.make_affine_matrix.
+        """Construct a 4x4 affine from 6 rigid-body parameters.
+
+        Identical to :meth:`RigidBodyRegistration.make_affine_matrix`.
+
+        Args:
+            params: (6,) array [tx, ty, tz, rx, ry, rz].
+
+        Returns:
+            (4, 4) homogeneous affine matrix.
         """
         tx, ty, tz, rx, ry, rz = params
 
@@ -237,8 +319,14 @@ class GaussNewtonRegistration:
 
     @partial(jax.jit, static_argnums=(0,))
     def apply_transform(self, image, params):
-        """
-        Apply rigid transform using the precomputed coordinate grid.
+        """Resample *image* using the precomputed coordinate grid.
+
+        Args:
+            image: (X, Y, Z) 3-D volume to transform.
+            params: (6,) rigid-body parameters.
+
+        Returns:
+            (X, Y, Z) resampled volume.
         """
         matrix = self.make_affine_matrix(params)
         inv_matrix = jnp.linalg.inv(matrix)
@@ -254,33 +342,52 @@ class GaussNewtonRegistration:
 
     @partial(jax.jit, static_argnums=(0,))
     def residual_fn(self, params, moving_image):
-        """
-        Compute the residual vector: template - transformed(moving).
-        Returns a flat (N,) vector.
+        """Flat residual vector: template - transformed(moving).
+
+        Args:
+            params: (6,) rigid-body parameters.
+            moving_image: (X, Y, Z) volume to register.
+
+        Returns:
+            (N,) residual vector where N = X * Y * Z.
         """
         transformed = self.apply_transform(moving_image, params)
         return (self.template - transformed).ravel()
 
     @partial(jax.jit, static_argnums=(0,))
     def loss_fn(self, params, moving_image):
-        """
-        Mean Squared Error loss (for comparison / monitoring).
+        """Mean squared error loss (for monitoring convergence).
+
+        Args:
+            params: (6,) rigid-body parameters.
+            moving_image: (X, Y, Z) volume to register.
+
+        Returns:
+            Scalar MSE loss.
         """
         r = self.residual_fn(params, moving_image)
         return jnp.mean(r ** 2)
 
     @partial(jax.jit, static_argnums=(0,))
     def _gauss_newton_step(self, params, moving_image):
-        """
-        Single Gauss-Newton update step.
+        """Execute a single Gauss-Newton update step.
 
-        Computes: delta = (J'J + damping*I)^{-1} J' r
-                  params_new = params - delta
+        Computes the damped Gauss-Newton direction:
+            delta = (J'J + damping * I)^{-1} J' r
+            params_new = params - delta
 
-        Memory-efficient approach:
-        - J'r via a single VJP (backward pass): grad(0.5*||r||^2) = J'r
-        - J'J via 6 JVP (forward) passes, one per parameter, then dot products.
-          This avoids materializing the full (N, 6) Jacobian.
+        Memory-efficient implementation avoids materialising the full
+        (N, 6) Jacobian:
+            - J'r via a single VJP (backward pass).
+            - J'J via 6 JVP (forward-mode) passes with basis tangent
+              vectors, then column dot products.
+
+        Args:
+            params: (6,) current rigid-body parameters.
+            moving_image: (X, Y, Z) volume to register.
+
+        Returns:
+            (6,) updated parameters.
         """
         # Residual at current params: (N,)
         r = self.residual_fn(params, moving_image)
@@ -326,10 +433,19 @@ class GaussNewtonRegistration:
 
     @partial(jax.jit, static_argnums=(0,))
     def register_volume(self, moving_image, init_params=None):
-        """
-        Register moving_image to the template using Gauss-Newton optimization.
+        """Register *moving_image* to the template via Gauss-Newton.
 
-        Returns: (best_params, registered_image)
+        Runs ``n_iter`` damped Gauss-Newton steps unrolled with
+        ``jax.lax.scan``.
+
+        Args:
+            moving_image: (X, Y, Z) volume to align.
+            init_params: Optional (6,) initial parameters.
+                Defaults to zeros (identity transform).
+
+        Returns:
+            Tuple of (best_params, registered_image) where
+            *best_params* is (6,) and *registered_image* is (X, Y, Z).
         """
         if init_params is None:
             init_params = jnp.zeros(6)

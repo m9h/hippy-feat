@@ -48,8 +48,16 @@ dev = [
     "hypothesis>=6.0",
     "pytest-cov>=4.0",
 ]
+doc = [
+    "sphinx>=7.0",
+    "furo>=2024.1.0",
+    "myst-parser>=3.0",
+    "sphinx-copybutton>=0.5",
+    "sphinxcontrib-bibtex>=2.6",
+    "sphinx-autodoc-typehints>=2.0",
+]
 all = [
-    "hippy-feat[neuro,signatures,bayesian,dev]",
+    "hippy-feat[neuro,signatures,bayesian,dev,doc]",
 ]
 
 [project.urls]

@@ -1,3 +1,32 @@
+"""Joint EEG-fMRI fusion with a differentiable balloon/HRF model.
+
+Implements a simplified asymmetric fusion approach: EEG band-power
+envelopes are mapped to a latent neural state via a learnable affine
+transform, convolved with a canonical hemodynamic response function
+(double-gamma HRF from SPM), and compared to observed BOLD.  The model
+parameters (gain, offset, HRF scale) are optimised end-to-end with
+``optax.adam`` through JAX autodiff.
+
+Key components:
+    - ``balloon_model`` -- canonical double-gamma HRF convolution that
+      converts a neural state time series to predicted BOLD signal.
+    - ``SymmetricalFusion`` -- class that holds co-registered EEG
+      envelope and fMRI data, fits the affine + HRF parameters, and
+      provides a ``predict`` method for real-time BOLD forecasting.
+
+This module is complementary to the rest of the hippy-feat pipeline:
+the fMRI side can be preprocessed with :mod:`jaxoccoli.motion` and
+:mod:`jaxoccoli.spatial`, and the resulting betas or connectivity
+matrices from :mod:`jaxoccoli.glm` / :mod:`jaxoccoli.covariance` can
+be cross-validated against EEG-derived predictions.
+
+References:
+    Friston et al. (2000) "Nonlinear responses in fMRI: the balloon
+    model, Volterra kernels, and other hemodynamics."
+    Huster et al. (2012) "Methods for simultaneous EEG-fMRI: an
+    introductory review."
+"""
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.signal import convolve
@@ -5,9 +34,23 @@ import optax
 from functools import partial
 
 def balloon_model(neural_state, tr, h_params):
-    """
-    Simplified Balloon Model to predict BOLD from Neural State.
-    Uses a Hemodynamic Response Function (HRF) convolution kernel.
+    """Predict BOLD signal from neural activity via HRF convolution.
+
+    Generates a canonical double-gamma HRF kernel (SPM parameterisation:
+    peak at ~6 s, undershoot at ~16 s, ratio 1/6) at 0.1 s resolution,
+    scales it by ``h_params[0]``, and convolves with *neural_state*.
+
+    Args:
+        neural_state: (T,) neural activity time series sampled at the
+            fMRI repetition time.
+        tr: Repetition time in seconds (currently used for reference;
+            the kernel is generated at a fixed 0.1 s resolution).
+        h_params: Sequence [scale, delay_offset].  *scale* multiplicatively
+            adjusts the HRF amplitude; *delay_offset* is reserved for
+            future learnable delay shifting.
+
+    Returns:
+        (T,) predicted BOLD signal (truncated to input length).
     """
     # Standard SPM HRF parameters (could be learnable)
     # For speed, we use a fixed canonical HRF basis.
@@ -38,12 +81,29 @@ def balloon_model(neural_state, tr, h_params):
     return bold
 
 class SymmetricalFusion:
+    """Asymmetric EEG-to-BOLD fusion model with a differentiable HRF.
+
+    Maps an EEG band-power envelope to predicted BOLD via a learnable
+    affine transform and canonical HRF convolution.  Parameters
+    ``[alpha, beta, hrf_scale]`` are optimised with Adam to minimise
+    MSE against observed fMRI.
+
+    The EEG envelope is downsampled to the fMRI TR grid by simple
+    bin-averaging during ``__init__``.
+
+    Args:
+        eeg_data: (T_eeg,) EEG envelope time series (e.g. alpha power).
+        fmri_data: (T_fmri,) BOLD signal from the ROI of interest.
+        tr: fMRI repetition time in seconds.
+    """
+
     def __init__(self, eeg_data, fmri_data, tr):
-        """
-        Joint EEG-fMRI Fusion Model.
-        eeg_data: (Time_E,) - Envelope of relevant band (e.g. Alpha/Beta)
-        fmri_data: (Time_F,) - BOLD signal from relevant ROI
-        tr: Repetition Time (s)
+        """Initialise the fusion model and downsample EEG to the fMRI grid.
+
+        Args:
+            eeg_data: (T_eeg,) EEG band-power envelope.
+            fmri_data: (T_fmri,) BOLD signal from a single ROI.
+            tr: Repetition time in seconds.
         """
         self.eeg = jnp.array(eeg_data)
         self.fmri = jnp.array(fmri_data)
@@ -67,15 +127,18 @@ class SymmetricalFusion:
 
     @partial(jax.jit, static_argnums=(0,))
     def loss_fn(self, params):
-        """
-        Joint Loss:
-        L = || BOLD_real - Balloon(Neural(EEG)) || + || EEG_real - Inverse(Neural) ||
-        
-        Simplified "Asymmetric" Fusion for Real-Time:
-        Predict BOLD from EEG.
-        Neural State = alpha * EEG_envelope + beta
-        BOLD_pred = HRF * Neural State
-        Loss = MSE(BOLD_pred, BOLD_real)
+        """Mean squared error between observed and predicted BOLD.
+
+        Simplified asymmetric forward model:
+            neural_state = alpha * EEG_envelope + beta
+            BOLD_pred    = HRF(hrf_scale) * neural_state
+            loss         = MSE(BOLD_observed, BOLD_pred)
+
+        Args:
+            params: (3,) array [alpha, beta, hrf_scale].
+
+        Returns:
+            Scalar MSE loss.
         """
         alpha, beta, hrf_scale = params
         
@@ -93,6 +156,17 @@ class SymmetricalFusion:
         return mse
 
     def fit(self, n_iter=100):
+        """Fit the fusion model to the stored EEG and fMRI data.
+
+        Runs *n_iter* Adam gradient steps, optimising
+        ``[alpha, beta, hrf_scale]`` starting from ``[1, 0, 1]``.
+
+        Args:
+            n_iter: Number of optimisation iterations (default 100).
+
+        Returns:
+            (3,) fitted parameters [alpha, beta, hrf_scale].
+        """
         # Params: [alpha, beta, hrf_scale]
         params = jnp.array([1.0, 0.0, 1.0])
         opt_state = self.optimizer.init(params)
@@ -111,8 +185,14 @@ class SymmetricalFusion:
 
     @partial(jax.jit, static_argnums=(0,))
     def predict(self, params, eeg_segment):
-        """
-        Forward prediction of BOLD from new EEG segment
+        """Forward-predict BOLD from a new EEG segment.
+
+        Args:
+            params: (3,) fitted parameters [alpha, beta, hrf_scale].
+            eeg_segment: (T,) new EEG envelope segment (at fMRI TR rate).
+
+        Returns:
+            (T,) predicted BOLD signal.
         """
         alpha, beta, hrf_scale = params
         neural = alpha * eeg_segment + beta
