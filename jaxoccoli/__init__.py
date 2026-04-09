@@ -195,3 +195,12 @@ from .nsd import (
     split_half_rdms,
     upper_triangle,
 )
+
+# DOT/fNIRS adapter (dot-jax FEM mesh → cortical surface)
+from .dot_adapter import (
+    DOTFrameProcessor,
+    MeshToCortexParams,
+    make_mesh_to_cortex,
+    simulate_dot_mesh_nodes,
+    simulate_hbo_frame,
+)
