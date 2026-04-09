@@ -160,3 +160,38 @@ from .transport import (
     wasserstein_distance,
     wasserstein_fc_distance,
 )
+
+# TOF-MRA angiography preprocessing
+from .angiography import (
+    build_vessel_tree,
+    estimate_radii,
+    frangi_enhance,
+    label_branches,
+    skeletonize_vessels,
+    threshold_vessels,
+    tof_pipeline,
+    vessel_density_map,
+)
+
+# HuggingFace foundation model adapters
+from .hf_encoder import (
+    HFModelAdapter,
+    HFEncoderParams,
+    TribeV2Adapter,
+    make_cortical_projection,
+    make_hf_encoder,
+    register_adapter,
+    get_adapter,
+    torch_to_jax,
+)
+
+# NSD validation (RSA, noise ceiling, category selectivity)
+from .nsd import (
+    category_selectivity,
+    compare_rdms,
+    load_nsd_betas,
+    noise_ceiling_r,
+    rdm_from_betas,
+    split_half_rdms,
+    upper_triangle,
+)
