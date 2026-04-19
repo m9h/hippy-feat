@@ -115,9 +115,27 @@ Variant G is specified in `docs/design/DESIGN_bayesian_first_level.md` and parti
 - **G-conjugate** (`make_conjugate_glm`, `make_ar1_conjugate_glm`): closed-form normal-inverse-gamma posterior. RT-compatible. This is effectively **Variant D done right** — D outputs `beta_mean` only; G-conjugate outputs `(beta_mean, beta_var, sigma2_mean)`. The variance map is the novel output RT-MindEye could use for *confidence-gated reconstruction*: only run the diffusion model when posterior std is below threshold.
 - **G-NUTS** (`make_bayesian_glm`, requires `blackjax`): full posterior via No-U-Turn Sampler with AR(p) noise. Offline — design doc estimates 30–60s for whole brain on A100. Not RT. For publication / model comparison against FSL FEAT, SPM, BROCCOLI, FABBER.
 
-### The novel contribution: physiological HRF (design only, not yet built)
+### The novel contribution: physiological HRF (vpjax-backed)
 
-Level 3 of G's HRF hierarchy uses `vpjax.hemodynamics.riera_hrf` as the "HRF generator," with priors informed by MRS (GABA/Glu), qMRI (T1, T2\*), and angiography (vessel geometry). The posterior is over *neurovascular coupling parameters*, not abstract shape weights. This is the genuinely new capability — nothing in GLMsingle, fMRIPrep, BROCCOLI, FABBER, FSL FEAT, or SPM does this. Implementation depends on vpjax and is Phase 3 in the design doc.
+Level 3 of G's HRF hierarchy uses a physiological neurovascular coupling model as the HRF generator, with priors informed by MRS (GABA/Glu), qMRI (T1, T2\*), and angiography (vessel geometry). The posterior is over *neurovascular coupling parameters*, not abstract shape weights. This is the genuinely new capability — nothing in GLMsingle, fMRIPrep, BROCCOLI, FABBER, FSL FEAT, or SPM does this.
+
+The physiological backend is **`vpjax`** — a sibling JAX project at `/home/mhough/dev/vpjax/` that provides differentiable cerebrovascular physiology (Riera 2006/2007 neurovascular coupling, Balloon-Windkessel, Bulte qBOLD, Germuska calibrated fMRI, Lu TRUST). It's already an **active interface partner** for hippy-feat: `jaxoccoli/angiography.py` emits `{points, radii, branch_ids}` → consumed by `vpjax.vascular.angiography.VesselTree` (contract-tested in `tests/test_angiography.py::test_compatible_with_vpjax`). Level-3 integration requires one new thin wrapper in vpjax: `riera_hrf(t, params) -> h(t)`, which feeds a unit impulse into `solve_riera` and reads out BOLD via `riera_to_balloon`. That's a single-afternoon change in vpjax, not a research project.
+
+## 5. Current project capabilities (cross-repo)
+
+Variant G sits inside a broader differentiable-physiology stack the user has built. For the deck and for future planning, treat these as **current capabilities**, not future dependencies:
+
+| Repo | Role in hippy-feat | Key exports |
+|---|---|---|
+| **`jaxoccoli`** (inside hippy-feat) | 22-module core library (~5500 LOC) | `glm`, `spatial`, `motion`, `stats`, `permutation`, `signatures`, `connectivity`, `covariance`, `matrix`, `graph`, `interpolate`, `learnable`, `losses`, `fourier`, `transport`, `bayesian_beta`, `multivariate`, `fusion`, `hf_encoder`, `dot_adapter`, `angiography`, `nsd` |
+| **`vpjax`** (peer, `/home/mhough/dev/vpjax/`) | Differentiable cerebrovascular physiology — drives Variant G Level 3 HRF, and consumes hippy-feat's angiography output | `hemodynamics` (Riera, Balloon, BOLD), `perfusion` (ASL), `qbold`, `qsm`, `vascular` (VesselTree), `metabolism`, `brainstem`, `cardiac`, `vaso`, `stochastic`, `integrators` (Local Linearization for stiff NVC ODEs) |
+| **`vbjax`** (upstream) | Neural mass models — upstream of vpjax's activity→BOLD chain | `make_bold()` Balloon reference |
+| **`dot-jax`** (peer) | Diffuse optical tomography FEM mesh | Consumed by `jaxoccoli/dot_adapter.py` for `hbo/hbr` → cortical surface |
+| **`vmtk`** (system binary, `mhough/neuro/vmtk` brew formula) | Centerline extraction for TOF-MRA | Feeds `jaxoccoli/angiography.py` |
+
+**Implication for Variant G:** Phase 4 (Riera Level 3) is not "waiting on vpjax to exist" — vpjax exists and is mature enough that hippy-feat already consumes its `VesselTree` interface. The real Phase 4 work is the `riera_hrf` helper (upstream, in vpjax) plus fixed-step diffrax for vmap-compatibility (a known constraint). Treat Level 3 as "gated on a small upstream API addition," not "research blocker."
+
+**Multi-modal prior story.** The design-doc priors on Riera params come from data modalities vpjax already has forward models for: MRS (metabolism), qMRI (T1/T2\*), angiography (VesselTree→vessel compliance). When those data pipelines land in hippy-feat, Level 3 gets *informed* priors for free — the inference code doesn't change.
 
 ### Implementation status (as of 2026-04-18)
 
