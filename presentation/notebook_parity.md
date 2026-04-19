@@ -84,15 +84,65 @@ Variant A uses plain OLS, the notebook uses AR(1) prewhitening. Question: how di
 | **A+N — Nuisance** | **Confound regression** — notebook has only 6 motion params; offline uses aCompCor | `mindeye.py:750` | ✅ **Highest-value addition.** Directly closes a MAJOR row in the gap table. |
 | **B — FLOBS** | HRF shape (3-basis) | single Glover | ⚠️ Dominated by C. Demote to ablation or drop. |
 | **C — Per-voxel HRF** | **HRF model** — notebook team stubbed this; we deliver it | `utils_glm.py:37-93`, `mindeye.ipynb` cell 17 | ✅ **Highest narrative value.** |
-| **D — Bayesian shrinkage** | **Regularization** — notebook has none; offline GLMsingle uses fracridge (not Bayesian) | — | ⚠️ Needs framing: argue why conjugate Gaussian beats fracridge, or swap in a fracridge variant. |
-| **E — Spatial Laplacian** | (no gap — notebook intentionally has `smoothing_fwhm=None`) | `mindeye.py:746` | ⚠️ Risky: could blur info MindEye needs. Gate on retrieval-accuracy test. |
+| **D — Bayesian shrinkage** | **Regularization** — notebook has none; offline GLMsingle uses fracridge (not Bayesian) | — | ⚠️ Now largely subsumed by G's conjugate path. Keep as the minimal-compute reference, or fold into G. |
+| **E — Spatial Laplacian** | (no gap — notebook intentionally has `smoothing_fwhm=None`) | `mindeye.py:746` | ⚠️ Risky: could blur info MindEye needs. Gate on retrieval-accuracy test. MRF prior in G is the principled version. |
 | **F — Log-signature** | (monitoring, not preprocessing) | — | ⚠️ Move to separate "RT safety" track. |
 | **C+D — Combined** | HRF + regularization | — | ✅ if D survives framing. |
+| **G — Bayesian first-level** | **Uncertainty, AR(p) noise, MRF spatial, physiological HRF** — notebook has none of these, offline has some | `docs/design/DESIGN_bayesian_first_level.md`, `jaxoccoli/bayesian_beta.py` | ✅ **Most ambitious; highest publication value.** See §4. |
 
-### Gaps still unclosed
+### Gaps still unclosed (pre-G)
 
 - **GLMdenoise proper** (PCA of noise-pool voxels). A+N approximates with tissue means — ~70% of the gap, not 100%.
-- **Fracridge** (GLMsingle's third pillar). D is a *different* regularizer, not equivalent. Either rename D as "fracridge analog" or add an actual fracridge variant.
+- **Fracridge** (GLMsingle's third pillar). D is a *different* regularizer, not equivalent. G's conjugate path is closer but still not fracridge.
+
+## 4. Variant G — Bayesian first-level (added 2026-04-18)
+
+Variant G is specified in `docs/design/DESIGN_bayesian_first_level.md` and partially implemented in `jaxoccoli/bayesian_beta.py` (359 lines). It's not just another variant — it reframes the whole taxonomy.
+
+### What G actually adds vs. the notebook
+
+| Dimension | Notebook | Variants A–F | Variant G |
+|---|---|---|---|
+| Beta output | point estimate | point estimate | **posterior mean + std** |
+| Noise model | AR(1) (nilearn) | OLS (except implicit via z-score) | **AR(p), p=2 default** |
+| HRF | single Glover | Glover / FLOBS / 20-lib | **FLOBS / parametric / physiological** |
+| Spatial prior | none | none / Laplacian (E) | **MRF (edge-preserving)** |
+| Uncertainty | none | none | **posterior distribution** |
+| Inference | OLS | OLS + shrinkage | **conjugate closed-form OR NUTS** |
+
+### Two paths, two use cases
+
+- **G-conjugate** (`make_conjugate_glm`, `make_ar1_conjugate_glm`): closed-form normal-inverse-gamma posterior. RT-compatible. This is effectively **Variant D done right** — D outputs `beta_mean` only; G-conjugate outputs `(beta_mean, beta_var, sigma2_mean)`. The variance map is the novel output RT-MindEye could use for *confidence-gated reconstruction*: only run the diffusion model when posterior std is below threshold.
+- **G-NUTS** (`make_bayesian_glm`, requires `blackjax`): full posterior via No-U-Turn Sampler with AR(p) noise. Offline — design doc estimates 30–60s for whole brain on A100. Not RT. For publication / model comparison against FSL FEAT, SPM, BROCCOLI, FABBER.
+
+### The novel contribution: physiological HRF (design only, not yet built)
+
+Level 3 of G's HRF hierarchy uses `vpjax.hemodynamics.riera_hrf` as the "HRF generator," with priors informed by MRS (GABA/Glu), qMRI (T1, T2\*), and angiography (vessel geometry). The posterior is over *neurovascular coupling parameters*, not abstract shape weights. This is the genuinely new capability — nothing in GLMsingle, fMRIPrep, BROCCOLI, FABBER, FSL FEAT, or SPM does this. Implementation depends on vpjax and is Phase 3 in the design doc.
+
+### Implementation status (as of 2026-04-18)
+
+- ✅ `make_conjugate_glm` — weak-prior normal-inverse-gamma (`bayesian_beta.py:33-114`)
+- ✅ `make_conjugate_glm_vmap` — batched over voxels (`:117`)
+- ✅ `make_ar1_conjugate_glm` — conjugate with AR(1) prewhitening (`:158`)
+- ✅ `make_bayesian_glm` — NUTS with AR(p) (`:256-359`, blackjax-gated)
+- ❌ MRF spatial prior
+- ❌ Parameterized double-gamma HRF (Level 2)
+- ❌ Riera physiological HRF (Level 3) — waiting on vpjax
+
+### What this means for the deck
+
+- **Relabel D** as "D — conjugate shrinkage (point estimate)" and **add G** as "G — Bayesian first-level (posterior distribution)." Keep D for the timing/ablation column; G is the flagship.
+- The deck's "Regularization: Ridge (cross-val)" gap row was flagged MAJOR. G-conjugate closes more of that than D does.
+- Consider a new slide: "Uncertainty-aware RT reconstruction" showing β mean + β std maps side by side, with the proposal that diffusion only runs when posterior confidence exceeds threshold. That's a story nobody else in the RT-MindEye space has.
+- Variant G bumps the deck's gap table by **one more MAJOR row**: the notebook has no uncertainty at all; offline GLMsingle reports per-fold ridge but not proper posteriors. Adding an "Uncertainty / posterior" row with Offline=partial, RT=none, G=full would strengthen the motivation.
+
+### Reconciled taxonomy for the paper / deck
+
+```
+RT-compatible (<1.5s/TR):         A, A+N, B, C, D, E, F, C+D, G-conjugate
+Offline/publication-only:         G-NUTS
+Phase-3 (pending vpjax):          G-Level-3 (physiological HRF)
+```
 
 ---
 
