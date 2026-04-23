@@ -100,7 +100,12 @@ def filter_to_special515(betas: np.ndarray, trial_ids: np.ndarray
 
 def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda"
                                    ) -> np.ndarray:
-    """Return OpenCLIP ViT-bigG/14 penultimate-layer embeddings, shape (N, 256, 1664)."""
+    """Return OpenCLIP ViT-bigG/14 penultimate-layer embeddings, shape (N, 256, 1664).
+
+    open_clip's VisionTransformer exposes the forward pipeline but not a
+    clean `forward_features` hook, so we run the layers manually and
+    grab tokens after the transformer, before `ln_post` / `proj`.
+    """
     import open_clip
     from PIL import Image
 
@@ -108,20 +113,31 @@ def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda
         "ViT-bigG-14", pretrained="laion2b_s39b_b160k", device=device
     )
     model.eval()
+    visual = model.visual  # open_clip.transformer.VisionTransformer
+
+    @torch.no_grad()
+    def _encode_penultimate(x: torch.Tensor) -> torch.Tensor:
+        # Patchify
+        x = visual.conv1(x)                                 # (B, C, H', W')
+        x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)  # (B, N, C)
+        # Prepend CLS token
+        cls = visual.class_embedding.to(x.dtype).expand(x.shape[0], 1, -1)
+        x = torch.cat([cls, x], dim=1)                      # (B, N+1, C)
+        x = x + visual.positional_embedding.to(x.dtype)
+        x = visual.ln_pre(x)
+        # open_clip layer-norms before and after transformer; transformer
+        # expects (batch, seq, dim) in newer versions, (seq, batch, dim) older.
+        # Use the model's own call signature.
+        x = visual.transformer(x)
+        # Drop CLS → (B, 256, 1664) for ViT-bigG/14 at 224×224
+        return x[:, 1:, :]
 
     embeddings = []
-    with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16):
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
         for p in image_paths:
             img = Image.open(p).convert("RGB")
             inp = preprocess(img).unsqueeze(0).to(device)
-            # Penultimate layer = token embeddings before pooling. The
-            # paper uses (256, 1664). open_clip ViT-bigG/14 has 257 tokens
-            # (1 CLS + 16×16 patches); we drop the CLS token.
-            vfeat = model.encode_image(inp)  # pooled
-            # To get penultimate, we need to hook into the transformer.
-            # Simpler: use model.visual.trunk.forward_features → drop CLS.
-            feats = model.visual.trunk.forward_features(inp)  # (1, 257, 1664)
-            feats = feats[:, 1:, :]  # drop CLS → (1, 256, 1664)
+            feats = _encode_penultimate(inp)
             embeddings.append(feats.float().cpu().numpy())
     return np.concatenate(embeddings, axis=0)
 
@@ -183,7 +199,7 @@ def predict_clip(model, betas: np.ndarray, device: str = "cuda",
     b = torch.from_numpy(betas.astype(np.float32)).to(device)
     # Shape expected by ridge: (batch, seq_len=1, n_voxels)
     b = b.unsqueeze(1)
-    with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.float16):
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
         for i in range(b.shape[0]):
             bi = b[i:i+1]
             voxel_ridge = model.ridge(bi, 0)  # subject idx 0 (sub-005)
