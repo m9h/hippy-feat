@@ -19,12 +19,12 @@ cd /home/mhough/dev/hippy-feat
 mkdir -p /data/derivatives/rtmindeye_paper/logs
 
 .venv/bin/python scripts/task_2_1_factorial.py \
-    --conditions A_fmriprep_glover \
+    --conditions ${FACTORIAL_CONDITIONS:-A_fmriprep_glover B_rtmotion_glmsingle} \
     --session ses-03 \
     --runs 1 2 3 4 5 6 7 8 9 10 11 \
     --out-dir /data/derivatives/rtmindeye_paper/task_2_1_betas
 
-# Condition B (RT motion + GLMsingle HRF) is blocked pending the jaxoccoli
-# MC pipeline (scripts/motion_correct_resampled.py) — once MC'd ses-03 volumes
-# exist at /data/3t/derivatives/motion_corrected_resampled/ses-03_run-*,
-# add `B_rtmotion_glmsingle` back to --conditions.
+# Override with `FACTORIAL_CONDITIONS="A_fmriprep_glover" sbatch ...` to rerun
+# just one condition. Condition B requires scripts/mcflirt_ses03.sbatch to have
+# produced mc_boldres files at /data/3t/derivatives/motion_corrected_resampled/
+# (raises FileNotFoundError per-run otherwise, which is recoverable).
