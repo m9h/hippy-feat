@@ -34,39 +34,33 @@ cd "$OUT"
 DOI_URL_ENC=$(printf '%s' "$DOI" | sed 's|/|%2F|g; s|:|%3A|g')
 ARCHIVE_URL="https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/download"
 
-echo "Attempting bulk download: $ARCHIVE_URL"
-if curl -fsSL -o peng_2024_dryad.tar "$ARCHIVE_URL"; then
-    echo "Bulk archive downloaded; unpacking..."
-    tar -xf peng_2024_dryad.tar -C raw/ || {
-        echo "tar failed — keeping archive for manual inspection"
-    }
-    ls -la raw/ | head
-    rm -f peng_2024_dryad.tar
-else
-    echo "Bulk endpoint failed — falling back to per-file downloads via Dryad API"
-    # List files in the dataset via the API, then pull each one.
-    curl -fsSL "https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/versions" \
-        -o versions.json
-    # Get the latest version's files endpoint
-    python3 - <<'PY'
-import json, urllib.request, os
+echo "Per-file download via Dryad API (bulk endpoint requires auth)."
+curl -fsSL "https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/versions" \
+    -o versions.json
+python3 - <<'PY'
+import json, urllib.request, os, sys
 with open("versions.json") as f:
     versions = json.load(f)
 latest = versions["_embedded"]["stash:versions"][-1]
 files_url = "https://datadryad.org" + latest["_links"]["stash:files"]["href"]
 with urllib.request.urlopen(files_url) as resp:
-    files = json.load(resp)
-for f in files["_embedded"]["stash:files"]:
+    listing = json.load(resp)
+files = listing["_embedded"]["stash:files"]
+total_bytes = sum(f.get("size", 0) for f in files)
+print(f"fetching {len(files)} files, total {total_bytes/1e9:.2f} GB")
+for i, f in enumerate(files, 1):
     name = f["path"]
-    stream_url = "https://datadryad.org" + f["_links"]["stash:file-download"]["href"]
+    # Link key on current Dryad API is "stash:download" (the /files/{id}/download endpoint)
+    stream_url = "https://datadryad.org" + f["_links"]["stash:download"]["href"]
     out_path = os.path.join("raw", name)
-    if os.path.exists(out_path):
-        print(f"SKIP {name}")
+    if os.path.exists(out_path) and os.path.getsize(out_path) == f.get("size", 0):
+        print(f"[{i}/{len(files)}] SKIP {name} (already downloaded)")
         continue
-    print(f"GET {name} from {stream_url}")
+    print(f"[{i}/{len(files)}] GET {name} ({f.get('size',0)/1e9:.2f} GB) from {stream_url}")
     urllib.request.urlretrieve(stream_url, out_path)
+    print(f"  done -> {os.path.getsize(out_path)/1e9:.2f} GB")
+print("all files downloaded")
 PY
-fi
 
 echo "---"
 du -sh "$OUT/raw/"
