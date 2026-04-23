@@ -235,6 +235,103 @@ register_adapter("facebook/tribev2", TribeV2Adapter)
 
 
 # ---------------------------------------------------------------------------
+# Raramuri adapter (accelerated TRIBEv2 via HTTP service)
+# ---------------------------------------------------------------------------
+# Raramuri (https://github.com/chrisvoncsefalvay/raramuri) runs the same
+# TRIBEv2 stack inside a Docker image with BF16/FP8 precision tuning,
+# parallel extractors, and Parakeet transcription. Output is byte-identical
+# to TRIBEv2 within BF16 rounding (~0.11% NRMSE). It is not a Python
+# library — the container exposes an HTTP server on port 8765 with an
+# /infer endpoint, so this adapter is an HTTP client rather than an
+# in-process model wrapper.
+
+class RaramuriAdapter(HFModelAdapter):
+    """Adapter for the Raramuri accelerated TRIBEv2 inference service.
+
+    Unlike TribeV2Adapter (which imports ``tribev2`` in-process), Raramuri
+    runs as a separate container with a REST API. ``load_model`` here just
+    verifies the service is reachable and warmed; ``extract_features``
+    POSTs the input spec to ``/infer`` and reshapes the response to the
+    (T, 20484) array the downstream JAX pipeline expects.
+
+    Inputs dict keys (at least one of video_path / video_url required):
+        - ``video_path``  : path to local video file
+        - ``video_url``   : yt-dlp-supported remote URL
+        - ``start_time``  : optional "HH:MM:SS" or seconds
+        - ``end_time``    : optional "HH:MM:SS" or seconds
+        - ``server_url``  : override base URL (default http://localhost:8765)
+        - ``timeout``     : optional per-request timeout (default 900s)
+    """
+
+    @staticmethod
+    def _import_requests():
+        try:
+            import requests
+            return requests
+        except ImportError:
+            raise ImportError(
+                "Raramuri adapter needs `requests`. Install with: pip install requests"
+            )
+
+    def load_model(self, model_id: str, cache_dir: str | None = None,
+                   server_url: str = "http://localhost:8765",
+                   ready_timeout: float = 600.0, **kwargs) -> Any:
+        """Wait for the Raramuri server to be ready; return a client handle."""
+        import time
+        requests = self._import_requests()
+
+        t0 = time.time()
+        while time.time() - t0 < ready_timeout:
+            try:
+                r = requests.get(f"{server_url}/ready", timeout=5)
+                if r.status_code == 200:
+                    return {"base_url": server_url}
+            except Exception:
+                pass
+            time.sleep(5)
+        raise RuntimeError(
+            f"Raramuri server at {server_url} did not become ready within "
+            f"{ready_timeout}s. Check the server job logs."
+        )
+
+    def extract_features(self, model: Any, inputs: dict, **kwargs) -> np.ndarray:
+        requests = self._import_requests()
+        base_url = inputs.get("server_url") or model["base_url"]
+
+        payload = {}
+        for k in ("video_path", "video_url", "start_time", "end_time", "output"):
+            if k in inputs and inputs[k] is not None:
+                payload[k] = inputs[k]
+        if "video_path" not in payload and "video_url" not in payload:
+            raise ValueError("Raramuri requires video_path or video_url in inputs")
+
+        timeout = inputs.get("timeout", 900)
+        r = requests.post(f"{base_url}/infer", json=payload, timeout=timeout)
+        r.raise_for_status()
+        result = r.json()
+
+        # Response shape: {"predictions": [[...]], "shape": [T, 20484], ...}
+        preds = result.get("predictions")
+        if preds is None and "result" in result:
+            preds = result["result"].get("predictions")
+        if preds is None:
+            raise RuntimeError(f"Raramuri response missing 'predictions': keys={list(result.keys())}")
+        return np.asarray(preds, dtype=np.float32)
+
+    @property
+    def output_dim(self) -> int:
+        return N_VERTICES_FS5
+
+    @property
+    def output_space(self) -> str:
+        return "fsaverage5"
+
+
+# Register Raramuri
+register_adapter("raramuri", RaramuriAdapter)
+
+
+# ---------------------------------------------------------------------------
 # HFEncoderParams (jaxoccoli NamedTuple pattern)
 # ---------------------------------------------------------------------------
 

@@ -309,7 +309,24 @@ def main():
     parser.add_argument("--n-trials", type=int, default=300,
                         help="Trials per subject for synthetic mode")
     parser.add_argument("--out-dir", type=str, default=None)
+    parser.add_argument("--encoder", choices=["synthetic", "tribev2", "raramuri"],
+                        default="synthetic",
+                        help=("Prediction backend. 'tribev2' and 'raramuri' require "
+                              "video stimuli; NSD ships static COCO images, so both "
+                              "currently fall back to synthetic and emit a warning. "
+                              "Left wired so a future NSD-movies extension or a "
+                              "single-frame-video wrapper can swap in without "
+                              "touching this script."))
+    parser.add_argument("--raramuri-server",
+                        default="http://localhost:8765",
+                        help="Raramuri hot server URL (only used when --encoder raramuri)")
     args = parser.parse_args()
+
+    if args.encoder in ("tribev2", "raramuri"):
+        print(f"WARNING: --encoder {args.encoder} requested, but NSD trials are "
+              f"static images not video. Falling back to synthetic predictions. "
+              f"Use scripts/raramuri_benchmark.py for real Raramuri/TRIBEv2 "
+              f"speedup measurements on video clips.")
 
     subjects = args.subjects or (SUBJECTS if args.all_subjects else SUBJECTS[:3])
 

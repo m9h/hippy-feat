@@ -272,7 +272,7 @@ def save_comparison(all_results: List[Dict], output_base: str):
 def main():
     parser = argparse.ArgumentParser(description="MindEye variant benchmark")
     parser.add_argument("--variants", nargs="+",
-                        default=["a_baseline", "c_pervoxel_hrf", "d_bayesian"],
+                        default=["a_baseline", "c_pervoxel_hrf", "d_bayesian", "g_bayesian"],
                         choices=list(VARIANT_REGISTRY.keys()),
                         help="Variants to benchmark")
     parser.add_argument("--session", default="ses-06", help="Session to process")
@@ -310,7 +310,7 @@ def main():
             variant.precompute(brain_mask_flat=brain_mask_flat, union_mask=union_mask)
         elif variant_name in ("cd_combined",):
             variant.precompute(brain_mask_flat=brain_mask_flat, union_mask=union_mask)
-        elif variant_name in ("d_bayesian", "f_logsig"):
+        elif variant_name in ("d_bayesian", "f_logsig", "g_bayesian"):
             # Try to load training betas for prior
             try:
                 train_betas = np.load(config.training_betas_path)

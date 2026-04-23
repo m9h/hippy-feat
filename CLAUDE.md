@@ -26,10 +26,20 @@ GPU-accelerated fMRI preprocessing and differentiable connectivity analysis in J
 `covariance.py`, `matrix.py`, `graph.py`, `interpolate.py`, `learnable.py`, `losses.py`, `connectivity.py`, `fourier.py`, `transport.py`, `bayesian_beta.py`, `multivariate.py`
 
 ### Foundation model integration (new)
-- `hf_encoder.py` — HuggingFace adapter pattern: `make_hf_encoder(model_id)`, TribeV2Adapter, `make_cortical_projection` (vertex→parcel with block-diagonal init)
+- `hf_encoder.py` — HuggingFace adapter pattern: `make_hf_encoder(model_id)`, TribeV2Adapter, RaramuriAdapter (HTTP client for local Raramuri server), `make_cortical_projection` (vertex→parcel with block-diagonal init)
 - `dot_adapter.py` — dot-jax FEM mesh → cortical surface bridge: `make_mesh_to_cortex`, `DOTFrameProcessor`
 - `angiography.py` — TOF-MRA pipeline: Frangi→skeleton→radii→VesselTree (interface contract with vpjax)
 - `nsd.py` — NSD validation: RSA (`rdm_from_betas`, `compare_rdms`), noise ceiling, category selectivity
+
+### Task 2.1 — fMRIPrep vs GLMsingle contributions to RT gap
+
+Discord-assigned task. See `TASK_2_1_STATUS.md` in the repo root for the current
+state, the canonical paper checkpoint path, the finalmask derivation, and
+resume instructions. Relevant scripts:
+- `scripts/task_2_1_factorial.py` / `.sbatch` — produces per-trial betas under factorial conditions
+- `scripts/mindeye_retrieval_eval.py` / `.sbatch` — retrieval-only inference using NGC PyTorch 26.03 arm64 SIF
+- `scripts/download_*.sbatch` — HF data/checkpoint/stimuli pulls
+- `scripts/pull_pytorch_ngc.sbatch` — builds `/data/derivatives/containers/pytorch_26.03.sif` (needs 64 GB RAM for mksquashfs)
 
 ## Cross-project interfaces
 

@@ -25,6 +25,74 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jaxoccoli.glm import GeneralLinearModel
 from jaxoccoli.stats import compute_f_stat
+from jaxoccoli.bayesian_beta import make_ar1_conjugate_glm
+
+
+# ---------------------------------------------------------------------------
+# AR(1) conjugate GLM on zero-padded inputs (Variant G hot path)
+# ---------------------------------------------------------------------------
+# Wraps the math from jaxoccoli.bayesian_beta.make_ar1_conjugate_glm into a
+# jax.jit function that takes X, Y, and an effective-length scalar as runtime
+# inputs. This lets process_tr pad design matrix and volume to max_trs so the
+# shape stays static across TRs (single JIT compile), while still using the
+# *effective* number of TRs for the InverseGamma shape parameter so posterior
+# variance shrinks correctly as data accumulates.
+
+@partial(jax.jit, static_argnames=("pp_scalar", "rho_prior_mean",
+                                    "rho_prior_var", "a0", "b0"))
+def _variant_g_forward(X_pad, Y_pad, n_eff,
+                        pp_scalar: float = 0.01,
+                        rho_prior_mean: float = 0.5,
+                        rho_prior_var: float = 0.09,
+                        a0: float = 0.01, b0: float = 0.01):
+    """AR(1)-prewhitened conjugate GLM, padded inputs, vmapped over voxels.
+
+    Args:
+        X_pad:  (T_max, P) design matrix, zero rows after index n_eff.
+        Y_pad:  (V, T_max) voxel data, zero columns after index n_eff.
+        n_eff:  scalar int32 — effective TR count (traced, not static).
+    Returns:
+        beta_mean: (V, P), beta_var: (V, P).
+    """
+    T, P = X_pad.shape
+    pp = pp_scalar * jnp.eye(P)
+
+    XtX = X_pad.T @ X_pad
+    XtX_ols = XtX + 1e-6 * jnp.eye(P)
+    Xty = X_pad.T @ Y_pad.T                              # (P, V)
+    beta_ols = jnp.linalg.solve(XtX_ols, Xty).T          # (V, P)
+
+    resid = Y_pad - beta_ols @ X_pad.T                   # (V, T_max)
+    r1 = jnp.sum(resid[:, 1:] * resid[:, :-1], axis=1)
+    r0 = jnp.sum(resid ** 2, axis=1)
+    rho_ols = r1 / (r0 + 1e-10)
+
+    n_eff_f = jnp.maximum(n_eff.astype(jnp.float32), 2.0)
+    var_resid = r0 / jnp.maximum(n_eff_f - 1.0, 1.0)
+    rho_precision = 1.0 / rho_prior_var
+    data_precision = r0 / (var_resid + 1e-10)
+    rho = (rho_precision * rho_prior_mean + data_precision * rho_ols) / (
+        rho_precision + data_precision
+    )
+    rho = jnp.clip(rho, -0.99, 0.99)
+
+    def _per_voxel(rho_v, y_v):
+        y_pw = y_v[1:] - rho_v * y_v[:-1]
+        X_pw = X_pad[1:] - rho_v * X_pad[:-1]
+        XtX_pw = X_pw.T @ X_pw
+        post_prec = XtX_pw + pp
+        post_prec_inv = jnp.linalg.inv(post_prec)
+        Xty_pw = X_pw.T @ y_pw
+        beta_mean_v = post_prec_inv @ Xty_pw
+        resid_pw = y_pw - X_pw @ beta_mean_v
+        rss = jnp.sum(resid_pw ** 2)
+        a_post = a0 + (n_eff_f - 1.0) / 2.0
+        b_post = b0 + 0.5 * rss
+        sigma2 = jnp.maximum(b_post / (a_post - 1.0), 1e-10)
+        beta_var_v = sigma2 * jnp.diagonal(post_prec_inv)
+        return beta_mean_v, beta_var_v
+
+    return jax.vmap(_per_voxel)(rho, Y_pad)
 
 
 # ---------------------------------------------------------------------------
@@ -1003,6 +1071,109 @@ class VariantF_LogSignature(RTPreprocessingVariant):
 
 
 # ---------------------------------------------------------------------------
+# Variant G: Bayesian first-level GLM (AR(1) conjugate, with posterior variance)
+# ---------------------------------------------------------------------------
+
+class VariantG_Bayesian(RTPreprocessingVariant):
+    """
+    Bayesian first-level GLM on the real-time path (Phase 1: conjugate).
+
+    Wraps jaxoccoli.bayesian_beta.make_ar1_conjugate_glm so every TR yields
+    (posterior_mean, posterior_var) for the probe beta. The variance is
+    exposed via `_last_beta_var` for confidence-gated downstream use
+    (see `confidence_mask`).
+
+    Uninformative prior  → mirrors Variant A OLS, AR(1)-corrected.
+    Training-data prior  → mirrors Variant D shrinkage, AR(1)-corrected.
+    """
+
+    def __init__(self, config: VariantConfig):
+        super().__init__(config)
+        self.name = "g_bayesian"
+        self.hrf: Optional[np.ndarray] = None
+        self.prior_mean: Optional[np.ndarray] = None   # (n_voxels,)
+        self.prior_var: Optional[np.ndarray] = None    # (n_voxels,)
+        self._last_beta_var: Optional[np.ndarray] = None  # (n_voxels,)
+
+    def precompute(self, training_betas: Optional[np.ndarray] = None) -> None:
+        n_hrf_trs = int(np.ceil(32.0 / self.config.tr))
+        self.hrf = make_glover_hrf(self.config.tr, n_hrf_trs)
+
+        if training_betas is not None and training_betas.shape[1] == self.config.n_voxels:
+            self.prior_mean = training_betas.mean(axis=0).astype(np.float32)
+            self.prior_var = np.maximum(
+                training_betas.var(axis=0).astype(np.float32), 1e-6
+            )
+        else:
+            self.prior_mean = np.zeros(self.config.n_voxels, dtype=np.float32)
+            self.prior_var = np.ones(self.config.n_voxels, dtype=np.float32) * 1e6
+
+        self._precomputed = True
+
+    def process_tr(self, volume: np.ndarray, tr_index: int,
+                   events_onsets: np.ndarray, probe_trial: int) -> np.ndarray:
+        n_trs = volume.shape[1]
+        dm, probe_idx = build_design_matrix(
+            events_onsets, self.config.tr, n_trs, self.hrf, probe_trial
+        )
+
+        # Pad to max_trs so the JIT forward sees a static shape and compiles
+        # only once across the whole run. Effective n_trs is threaded through
+        # as a traced scalar so InverseGamma shape (a_post) and noise-variance
+        # scaling use the real count, not the padded length.
+        max_trs = self.config.max_trs
+        dm_padded = np.zeros((max_trs, dm.shape[1]), dtype=np.float32)
+        dm_padded[:n_trs] = dm
+        vol_padded = np.zeros((self.config.n_voxels, max_trs), dtype=np.float32)
+        vol_padded[:, :n_trs] = volume
+
+        X = jnp.asarray(dm_padded)
+        Y = jnp.asarray(vol_padded)
+        n_eff = jnp.asarray(n_trs, dtype=jnp.int32)
+
+        betas_all, vars_all = _variant_g_forward(X, Y, n_eff)
+
+        ar1_beta = np.asarray(betas_all[:, probe_idx], dtype=np.float32)
+        ar1_var = np.maximum(
+            np.asarray(vars_all[:, probe_idx], dtype=np.float32), 1e-10
+        )
+
+        prior_mean = self.prior_mean.astype(np.float32)
+        prior_var = self.prior_var.astype(np.float32)
+
+        posterior_var = 1.0 / (1.0 / prior_var + 1.0 / ar1_var)
+        posterior_mean = posterior_var * (
+            prior_mean / prior_var + ar1_beta / ar1_var
+        )
+
+        self._last_beta_var = posterior_var.astype(np.float32)
+        return posterior_mean.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Confidence-gating helper
+# ---------------------------------------------------------------------------
+
+def confidence_mask(beta_mean: np.ndarray, beta_var: np.ndarray,
+                    threshold: float) -> np.ndarray:
+    """
+    Build a boolean mask of voxels whose posterior beta is "confident enough".
+
+    Semantics: mask is True where |beta_mean| / sqrt(beta_var) > threshold
+    (a z-score-like SNR cutoff). threshold=0 excludes all voxels with any
+    posterior uncertainty; threshold=inf includes all.
+    """
+    beta_mean = np.asarray(beta_mean)
+    beta_var = np.asarray(beta_var)
+    if np.isinf(threshold):
+        return np.ones(beta_mean.shape, dtype=bool)
+    if threshold == 0.0:
+        return np.zeros(beta_mean.shape, dtype=bool)
+    snr = np.abs(beta_mean) / np.sqrt(np.maximum(beta_var, 1e-30))
+    return np.asarray(snr > threshold, dtype=bool)
+
+
+# ---------------------------------------------------------------------------
 # Variant CD: Combined Per-Voxel HRF + Bayesian Shrinkage
 # ---------------------------------------------------------------------------
 
@@ -1067,6 +1238,7 @@ VARIANT_REGISTRY = {
     "d_bayesian": VariantD_Bayesian,
     "e_spatial": VariantE_Spatial,
     "f_logsig": VariantF_LogSignature,
+    "g_bayesian": VariantG_Bayesian,
     "cd_combined": VariantCD_Combined,
 }
 
