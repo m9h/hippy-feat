@@ -39,7 +39,7 @@ apptainer exec --nv \
         pip install --user --no-cache-dir --quiet \
             open_clip_torch accelerate omegaconf einops \
             "transformers>=4.40" timm nilearn nibabel imageio \
-            webdataset dalle2_pytorch scikit-image 2>&1 | tail -5
+            webdataset dalle2_pytorch scikit-image diffusers 2>&1 | tail -5
         # models.py top-level imports OpenAI CLIP (not open_clip); add it.
         pip install --user --no-cache-dir --quiet \
             "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3
