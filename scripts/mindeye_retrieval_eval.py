@@ -42,6 +42,44 @@ sys.path.insert(0, str(RTCLOUD_MINDEYE / "models"))
 sys.path.insert(0, str(RTCLOUD_MINDEYE / "scripts"))  # for utils_mindeye if models.py needs it
 
 
+# Stub-patch generative_models.sgm.* — utils_mindeye imports
+# `FrozenOpenCLIPImageEmbedder` and `append_dims` from it at module scope,
+# but we never actually call them for retrieval (they're used by the
+# diffusion prior / unCLIP reconstruction path we skip). Inserting stubs
+# into sys.modules lets the import succeed cleanly.
+import types as _types
+
+def _install_sgm_stubs():
+    if "generative_models" in sys.modules:
+        return
+    gm = _types.ModuleType("generative_models")
+    sgm = _types.ModuleType("generative_models.sgm")
+    sgm_util = _types.ModuleType("generative_models.sgm.util")
+    sgm_modules = _types.ModuleType("generative_models.sgm.modules")
+    sgm_enc = _types.ModuleType("generative_models.sgm.modules.encoders")
+    sgm_enc_mods = _types.ModuleType("generative_models.sgm.modules.encoders.modules")
+
+    # Minimal symbol surface that utils_mindeye imports
+    sgm_util.append_dims = lambda x, n: x
+    class _Stub(torch.nn.Module):
+        def __init__(self, *a, **k): super().__init__()
+        def forward(self, *a, **k): return None
+    sgm_enc_mods.FrozenOpenCLIPImageEmbedder = _Stub
+    sgm_enc_mods.FrozenOpenCLIPEmbedder2 = _Stub
+
+    sys.modules["generative_models"] = gm
+    sys.modules["generative_models.sgm"] = sgm
+    sys.modules["generative_models.sgm.util"] = sgm_util
+    sys.modules["generative_models.sgm.modules"] = sgm_modules
+    sys.modules["generative_models.sgm.modules.encoders"] = sgm_enc
+    sys.modules["generative_models.sgm.modules.encoders.modules"] = sgm_enc_mods
+    # Also provide a bare `sgm` alias since mindeye.py imports `import sgm` directly
+    sys.modules["sgm"] = sgm
+
+
+_install_sgm_stubs()
+
+
 class MindEyeModule(nn.Module):
     """Trivial wrapper — the checkpoint assigns .ridge and .backbone as attrs."""
     def __init__(self):

@@ -38,10 +38,15 @@ apptainer exec --nv \
         # Install MindEye runtime deps (idempotent, cached in PYTHONUSERBASE).
         pip install --user --no-cache-dir --quiet \
             open_clip_torch accelerate omegaconf einops \
-            "transformers>=4.40" timm nilearn nibabel imageio 2>&1 | tail -5
+            "transformers>=4.40" timm nilearn nibabel imageio \
+            webdataset dalle2_pytorch 2>&1 | tail -5
         # models.py top-level imports OpenAI CLIP (not open_clip); add it.
         pip install --user --no-cache-dir --quiet \
             "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3
+        # utils_mindeye imports generative_models.sgm.* — Stability SDXL repo.
+        pip install --user --no-cache-dir --quiet \
+            "git+https://github.com/Stability-AI/generative-models.git" \
+            2>&1 | tail -3
         echo "[env] torch + open_clip ready"
         cd /home/mhough/dev/hippy-feat
         python scripts/mindeye_retrieval_eval.py \
