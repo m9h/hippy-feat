@@ -5,8 +5,10 @@ Goal: decompose the 10 pp image-retrieval gap between paper Offline 3T
 (76 %) and End-of-run RT (66 %) into a fMRIPrep contribution and a
 GLMsingle contribution.
 
-**Target audience for this doc:** me tomorrow morning / remote contributors
-who want to resume the work without re-deriving state.
+**Target audience for this doc:** me next week / remote contributors who
+want to resume the work without re-deriving state. (Thursday 4/23 meeting
+surfaced a dep cascade in the MindEye checkpoint loader path; numbers
+deferred to next week, infra in place.)
 
 ---
 
@@ -118,6 +120,32 @@ tail -100 /data/derivatives/rtmindeye_paper/logs/mindeye-retrieval-eval-*.out
 # in mindeye_retrieval_eval.py may need small alignment with paper checkpoint).
 # See the `missing keys` / `unexpected keys` report printed by load_mindeye().
 ```
+
+## Dependency cascade in `models.py` (resolved 4/23)
+
+Loading the paper's `BrainNetwork` via `from models import BrainNetwork`
+triggers the following import cascade:
+
+```
+models.py
+  ├── import clip            (OpenAI CLIP, not open_clip)
+  ├── from dalle2_pytorch import …
+  └── import utils_mindeye
+        ├── import webdataset as wds
+        └── from generative_models.sgm.* import FrozenOpenCLIPImageEmbedder, append_dims
+              (Stability AI SDXL repo, no pip install)
+```
+
+Runtime pip-installs via `mindeye_retrieval_eval.sbatch` handle: OpenAI
+CLIP (git), `dalle2_pytorch` (pypi), `webdataset` (pypi). For
+`generative_models` (no clean pypi, github install may fail), we insert
+stub `sys.modules` entries before the `from models import BrainNetwork`
+call — the stubs provide `FrozenOpenCLIPImageEmbedder` (no-op nn.Module)
+and `append_dims` (identity) which satisfy the top-level imports without
+requiring the actual SDXL stack. Retrieval-only inference never calls
+those symbols, so the stubs are safe.
+
+See `scripts/mindeye_retrieval_eval.py:_install_sgm_stubs()`.
 
 ## Known risks / open questions
 
