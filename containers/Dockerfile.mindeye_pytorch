@@ -6,12 +6,21 @@ FROM nvcr.io/nvidia/pytorch:26.03-py3
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Bootstrap uv
+# Bootstrap uv into the container's pip (works on PEP-668 Ubuntu 24.04
+# because /usr/local/lib/python3.12 isn't externally-managed).
 RUN python -m pip install --no-cache-dir --quiet uv
+
+# Create a venv that inherits the container's NVIDIA-tuned torch via
+# --system-site-packages. Without this we'd lose the Blackwell-tuned
+# torch 2.11.0a0+nv26.03 build that's the whole point of using NGC.
+ENV VENV_DIR=/opt/mindeye_env
+RUN uv venv --python "$(which python)" --system-site-packages "$VENV_DIR"
+# Make this venv the default `python` inside the container.
+ENV PATH="$VENV_DIR/bin:$PATH"
 
 # MedARC paper pins from rtcloud-projects/mindeye/conf/pyproject.toml.
 # diffusers 0.23.0 still exposes diffusers.models.vae.Decoder.
-RUN uv pip install --system --no-cache --quiet \
+RUN uv pip install --python "$VENV_DIR/bin/python" --no-cache --quiet \
     open_clip_torch \
     "accelerate==0.24.1" \
     omegaconf \
@@ -29,13 +38,13 @@ RUN uv pip install --system --no-cache --quiet \
     scipy
 
 # OpenAI CLIP — top-level "import clip" in models.py; github only.
-RUN uv pip install --system --no-cache --quiet \
+RUN uv pip install --python "$VENV_DIR/bin/python" --no-cache --quiet \
     "git+https://github.com/openai/CLIP.git"
 
 # sgm (Stability generative-models) — copy local source then install.
 # Build context must include this path; build sbatch handles it.
 COPY mindeye_generative_models/ /opt/sgm_src/
-RUN uv pip install --system --no-cache --quiet /opt/sgm_src/ || \
+RUN uv pip install --python "$VENV_DIR/bin/python" --no-cache --quiet /opt/sgm_src/ || \
     echo "WARN: sgm install failed; sys.modules stub fallback in retrieval script"
 
 # Smoke check at build time so a broken image fails immediately.
