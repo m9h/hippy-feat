@@ -36,10 +36,14 @@ apptainer exec --nv \
         set -euo pipefail
         export PATH=$PYTHONUSERBASE/bin:$PATH
         # Install MindEye runtime deps (idempotent, cached in PYTHONUSERBASE).
+        # Force-reinstall diffusers at a version that still exposes
+        # `diffusers.models.vae.Decoder` (the import path rtcloud-projects
+        # models.py uses). 0.22+ moved it to diffusers.models.autoencoders.vae.
         pip install --user --no-cache-dir --quiet \
             open_clip_torch accelerate omegaconf einops \
             "transformers>=4.40" timm nilearn nibabel imageio \
-            webdataset dalle2_pytorch scikit-image diffusers 2>&1 | tail -5
+            webdataset dalle2_pytorch scikit-image \
+            "diffusers==0.21.4" --force-reinstall 2>&1 | tail -5
         # models.py top-level imports OpenAI CLIP (not open_clip); add it.
         pip install --user --no-cache-dir --quiet \
             "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3

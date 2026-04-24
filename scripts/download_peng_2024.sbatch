@@ -50,8 +50,13 @@ total_bytes = sum(f.get("size", 0) for f in files)
 print(f"fetching {len(files)} files, total {total_bytes/1e9:.2f} GB")
 for i, f in enumerate(files, 1):
     name = f["path"]
-    # Link key on current Dryad API is "stash:download" (the /files/{id}/download endpoint)
-    stream_url = "https://datadryad.org" + f["_links"]["stash:download"]["href"]
+    # Unauthenticated public download URL uses /downloads/file_stream/{id}
+    # — the /api/v2/files/{id}/download endpoint from `stash:download` returns
+    # 401 without an API token. The numeric ID is at the tail of the "self"
+    # link like "/api/v2/files/3533344".
+    self_href = f["_links"]["self"]["href"]
+    file_id = self_href.rstrip("/").split("/")[-1]
+    stream_url = f"https://datadryad.org/downloads/file_stream/{file_id}"
     out_path = os.path.join("raw", name)
     if os.path.exists(out_path) and os.path.getsize(out_path) == f.get("size", 0):
         print(f"[{i}/{len(files)}] SKIP {name} (already downloaded)")
