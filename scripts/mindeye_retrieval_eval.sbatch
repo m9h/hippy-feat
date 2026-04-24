@@ -24,44 +24,53 @@ set -euo pipefail
 CONDITION=${CONDITION:-A_fmriprep_glover}
 SESSION=${SESSION:-ses-03}
 SIF=/data/derivatives/containers/pytorch_26.03.sif
-PYUSER_SITE=/data/derivatives/rtmindeye_paper/pyuser_site
-mkdir -p "$PYUSER_SITE" /data/derivatives/rtmindeye_paper/logs
+VENV_DIR=/data/derivatives/rtmindeye_paper/mindeye_venv
+UV_CACHE=/data/derivatives/uv_cache
+MARKER_VER=v2
+MARKER=$VENV_DIR/.install_complete_${MARKER_VER}
+mkdir -p "$(dirname "$VENV_DIR")" "$UV_CACHE" /data/derivatives/rtmindeye_paper/logs
 
 apptainer exec --nv \
     --bind /data:/data \
     --bind /home/mhough:/home/mhough \
-    --env "PYTHONUSERBASE=$PYUSER_SITE" \
+    --env "UV_CACHE_DIR=$UV_CACHE" \
+    --env "VENV_DIR=$VENV_DIR" \
+    --env "MARKER=$MARKER" \
     "$SIF" \
     bash -c '
         set -euo pipefail
-        export PATH=$PYTHONUSERBASE/bin:$PATH
-        # Use uv (Rust-based pip replacement) — 10-100x faster, parallel
-        # downloads, better caching. --reinstall on uv is much faster than
-        # pip --force-reinstall on the container squashfs filesystem.
-        python -m pip install --user --quiet uv 2>&1 | tail -3
-        echo "[env] uv bootstrapped"
 
-        # Use MedARC paper pins exactly — pyproject.toml at
-        # /data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/conf/
-        # pins diffusers==0.23.0 (not 0.21.4), accelerate==0.24.1, etc.
-        # That version of diffusers still exposes diffusers.models.vae.Decoder.
-        TGT="$PYTHONUSERBASE/lib/python3.12/site-packages"
-        UVPIP="uv pip install --python $(which python) --target $TGT --quiet"
+        # Bootstrap uv once on NAS (~/.cache/uv goes to $UV_CACHE_DIR via env).
+        # Uses NGC container'"'"'s python, installs uv to container-managed site.
+        python -m pip install --quiet --user uv 2>&1 | tail -3
+        export PATH=$HOME/.local/bin:$PATH
 
-        $UVPIP \
-            "open_clip_torch" "accelerate==0.24.1" "omegaconf" "einops==0.8.1" \
-            "transformers>=4.40" "timm" "nilearn" "nibabel" "imageio" \
-            "webdataset" "dalle2-pytorch==1.15.6" "scikit-image" \
-            "diffusers==0.23.0" "h5py" "scipy" 2>&1 | tail -5
-        # OpenAI CLIP (git, not pypi — pypi clip is a different package)
-        $UVPIP "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3
-        # sgm (Stability generative-models) is packaged locally in the
-        # rtcloud-projects tree as an installable wheel — no more sys.modules
-        # stub needed.
-        $UVPIP "/data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/models/generative_models" 2>&1 | tail -3 || true
-        echo "[env] torch + open_clip ready"
+        # Persistent venv on NAS — created once, reused forever.
+        if [ ! -d "$VENV_DIR" ]; then
+            echo "[env] creating venv at $VENV_DIR"
+            uv venv --python "$(which python)" "$VENV_DIR"
+        fi
+
+        # Skip the 15-minute install step if a previous run already
+        # populated the venv. Marker version bumps on env-schema changes.
+        if [ ! -f "$MARKER" ]; then
+            echo "[env] installing MindEye paper deps into $VENV_DIR (first time)"
+            UVPIP="uv pip install --python $VENV_DIR/bin/python --cache-dir $UV_CACHE_DIR --quiet"
+            $UVPIP \
+                "open_clip_torch" "accelerate==0.24.1" "omegaconf" "einops==0.8.1" \
+                "transformers>=4.40" "timm" "nilearn" "nibabel" "imageio" \
+                "webdataset" "dalle2-pytorch==1.15.6" "scikit-image" \
+                "diffusers==0.23.0" "h5py" "scipy" 2>&1 | tail -5
+            $UVPIP "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3
+            $UVPIP "/data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/models/generative_models" 2>&1 | tail -3 || true
+            touch "$MARKER"
+            echo "[env] install complete — marker $MARKER touched; future jobs skip this step"
+        else
+            echo "[env] reusing venv at $VENV_DIR (marker $MARKER present)"
+        fi
+
         cd /home/mhough/dev/hippy-feat
-        python scripts/mindeye_retrieval_eval.py \
+        "$VENV_DIR/bin/python" scripts/mindeye_retrieval_eval.py \
             --condition '"$CONDITION"' \
             --session '"$SESSION"' \
             --out-json /data/derivatives/rtmindeye_paper/task_2_1_betas/retrieval_'"$CONDITION"'.json
