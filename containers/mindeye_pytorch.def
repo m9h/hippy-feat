@@ -1,0 +1,66 @@
+Bootstrap: localimage
+From: /data/derivatives/containers/pytorch_26.03.sif
+
+%labels
+    Maintainer Morgan Hough <morgan.hough@gmail.com>
+    Description NGC PyTorch 26.03 arm64 + MindEye runtime deps (paper pins)
+    Source github.com/m9h/hippy-feat — containers/mindeye_pytorch.def
+
+%post
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Bootstrap uv into the system Python (writable during %post).
+    python -m pip install --no-cache-dir --quiet uv
+    export PATH=/usr/local/bin:/usr/bin:$PATH
+
+    # MedARC paper pins from
+    # rtcloud-projects/mindeye/conf/pyproject.toml
+    # (diffusers 0.23.0 still exposes diffusers.models.vae.Decoder.)
+    uv pip install --system --no-cache --quiet \
+        open_clip_torch \
+        "accelerate==0.24.1" \
+        omegaconf \
+        "einops==0.8.1" \
+        "transformers>=4.40" \
+        timm \
+        nilearn \
+        nibabel \
+        imageio \
+        webdataset \
+        "dalle2-pytorch==1.15.6" \
+        scikit-image \
+        "diffusers==0.23.0" \
+        h5py \
+        scipy
+
+    # OpenAI CLIP (top-level "import clip" in models.py — github only).
+    uv pip install --system --no-cache --quiet \
+        "git+https://github.com/openai/CLIP.git"
+
+    # sgm (Stability generative-models) — packaged locally in the
+    # rtcloud-projects tree at build time. We embed the source via %files
+    # below so the build is self-contained.
+    if [ -d /opt/sgm_src ]; then
+        uv pip install --system --no-cache --quiet /opt/sgm_src || \
+            echo "WARN: sgm install failed; mindeye_retrieval_eval.py has sys.modules stub fallback"
+    fi
+
+    # Smoke check: import the module the retrieval path needs.
+    python -c "import torch, open_clip, diffusers, accelerate; \
+               from diffusers.models.vae import Decoder; \
+               print(f'[smoke] torch={torch.__version__} cuda={torch.version.cuda}')"
+
+%files
+    # Embed the local sgm source so the install is reproducible
+    # without network access during build.
+    /data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/models/generative_models /opt/sgm_src
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    # Make CUDA visible inside the container by default
+    export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+
+%runscript
+    exec python "$@"
