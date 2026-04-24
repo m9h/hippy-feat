@@ -35,22 +35,27 @@ apptainer exec --nv \
     bash -c '
         set -euo pipefail
         export PATH=$PYTHONUSERBASE/bin:$PATH
-        # Install MindEye runtime deps (idempotent, cached in PYTHONUSERBASE).
-        # Force-reinstall diffusers at a version that still exposes
-        # `diffusers.models.vae.Decoder` (the import path rtcloud-projects
-        # models.py uses). 0.22+ moved it to diffusers.models.autoencoders.vae.
-        pip install --user --no-cache-dir --quiet \
+        # Use uv (Rust-based pip replacement) — 10-100x faster, parallel
+        # downloads, better caching. --reinstall on uv is much faster than
+        # pip --force-reinstall on the container squashfs filesystem.
+        python -m pip install --user --quiet uv 2>&1 | tail -3
+        echo "[env] uv bootstrapped"
+
+        # Pin diffusers==0.21.4 so rtcloud-projects models.py can still
+        # `from diffusers.models.vae import Decoder` (moved to
+        # .autoencoders.vae in 0.22+).
+        uv pip install --python "$(which python)" --target "$PYTHONUSERBASE/lib/python3.12/site-packages" --quiet \
             open_clip_torch accelerate omegaconf einops \
             "transformers>=4.40" timm nilearn nibabel imageio \
             webdataset dalle2_pytorch scikit-image \
-            "diffusers==0.21.4" --force-reinstall 2>&1 | tail -5
-        # models.py top-level imports OpenAI CLIP (not open_clip); add it.
-        pip install --user --no-cache-dir --quiet \
-            "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3
-        # utils_mindeye imports generative_models.sgm.* — Stability SDXL repo.
-        pip install --user --no-cache-dir --quiet \
+            "diffusers==0.21.4" --reinstall-package diffusers 2>&1 | tail -5
+        # OpenAI CLIP + Stability generative-models (the latter guarded by
+        # sys.modules stub in mindeye_retrieval_eval.py so install can fail).
+        uv pip install --python "$(which python)" --target "$PYTHONUSERBASE/lib/python3.12/site-packages" --quiet \
+            "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3 || true
+        uv pip install --python "$(which python)" --target "$PYTHONUSERBASE/lib/python3.12/site-packages" --quiet \
             "git+https://github.com/Stability-AI/generative-models.git" \
-            2>&1 | tail -3
+            2>&1 | tail -3 || true
         echo "[env] torch + open_clip ready"
         cd /home/mhough/dev/hippy-feat
         python scripts/mindeye_retrieval_eval.py \
