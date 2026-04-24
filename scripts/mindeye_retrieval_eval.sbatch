@@ -41,21 +41,24 @@ apptainer exec --nv \
         python -m pip install --user --quiet uv 2>&1 | tail -3
         echo "[env] uv bootstrapped"
 
-        # Pin diffusers==0.21.4 so rtcloud-projects models.py can still
-        # `from diffusers.models.vae import Decoder` (moved to
-        # .autoencoders.vae in 0.22+).
-        uv pip install --python "$(which python)" --target "$PYTHONUSERBASE/lib/python3.12/site-packages" --quiet \
-            open_clip_torch accelerate omegaconf einops \
-            "transformers>=4.40" timm nilearn nibabel imageio \
-            webdataset dalle2_pytorch scikit-image \
-            "diffusers==0.21.4" --reinstall-package diffusers 2>&1 | tail -5
-        # OpenAI CLIP + Stability generative-models (the latter guarded by
-        # sys.modules stub in mindeye_retrieval_eval.py so install can fail).
-        uv pip install --python "$(which python)" --target "$PYTHONUSERBASE/lib/python3.12/site-packages" --quiet \
-            "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3 || true
-        uv pip install --python "$(which python)" --target "$PYTHONUSERBASE/lib/python3.12/site-packages" --quiet \
-            "git+https://github.com/Stability-AI/generative-models.git" \
-            2>&1 | tail -3 || true
+        # Use MedARC paper pins exactly — pyproject.toml at
+        # /data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/conf/
+        # pins diffusers==0.23.0 (not 0.21.4), accelerate==0.24.1, etc.
+        # That version of diffusers still exposes diffusers.models.vae.Decoder.
+        TGT="$PYTHONUSERBASE/lib/python3.12/site-packages"
+        UVPIP="uv pip install --python $(which python) --target $TGT --quiet"
+
+        $UVPIP \
+            "open_clip_torch" "accelerate==0.24.1" "omegaconf" "einops==0.8.1" \
+            "transformers>=4.40" "timm" "nilearn" "nibabel" "imageio" \
+            "webdataset" "dalle2-pytorch==1.15.6" "scikit-image" \
+            "diffusers==0.23.0" "h5py" "scipy" 2>&1 | tail -5
+        # OpenAI CLIP (git, not pypi — pypi clip is a different package)
+        $UVPIP "git+https://github.com/openai/CLIP.git" 2>&1 | tail -3
+        # sgm (Stability generative-models) is packaged locally in the
+        # rtcloud-projects tree as an installable wheel — no more sys.modules
+        # stub needed.
+        $UVPIP "/data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/models/generative_models" 2>&1 | tail -3 || true
         echo "[env] torch + open_clip ready"
         cd /home/mhough/dev/hippy-feat
         python scripts/mindeye_retrieval_eval.py \
