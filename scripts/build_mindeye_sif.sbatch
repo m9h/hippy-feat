@@ -6,62 +6,71 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=/data/derivatives/containers/build_logs/%x-%j.out
 
-# Build extended NGC PyTorch SIF with MindEye runtime deps baked in.
-# One-time ~30-60 min build. After this, every retrieval job uses this
-# SIF directly — zero install phase, zero cascade-fixing.
+# Build extended NGC PyTorch SIF with MindEye runtime deps baked in,
+# via docker build + apptainer convert (same pattern as Raramuri SIF).
 #
-# Background: the previous approach (NGC base + uv pip install at job
-# start) ran into 2-hour install times because uv --target on NFS does
-# plain copies of every wheel file (no hard-link). Three retrieval jobs
-# in a row got killed by the 2 h walltime mid-install. Baking deps into
-# a SIF eliminates that whole class of failure.
-#
-# All build temp dirs point at NAS to avoid the 97%-full local NVMe.
+# Why docker not apptainer build --fakeroot:
+#   apptainer 1.4.5 + NFS tmpdir + --fakeroot fails with "failed to
+#   create staging file: no such file or directory" — known issue with
+#   NFS user-namespace support. Docker uses overlayfs on /data and
+#   doesn't have this problem (verified for raramuri-arm64.sif).
 
 set -euo pipefail
 
-DEF=/home/mhough/dev/hippy-feat/containers/mindeye_pytorch.def
-OUT=/data/derivatives/containers/mindeye_pytorch_26.03.sif
+REPO=/home/mhough/dev/hippy-feat
+CTX=/data/derivatives/containers/build_ctx_mindeye
+IMAGE_TAG=mindeye-pytorch:26.03
+SIF=/data/derivatives/containers/mindeye_pytorch_26.03.sif
 LOGS=/data/derivatives/containers/build_logs
-TMPROOT=/data/derivatives/apptainer_tmp
 
-mkdir -p "$LOGS" "$TMPROOT" "$(dirname "$OUT")"
+mkdir -p "$LOGS" "$CTX" "$(dirname "$SIF")"
 
-# Force every apptainer scratch + cache dir onto NAS — local nvme is 97% full
-export APPTAINER_TMPDIR="$TMPROOT"
-export APPTAINER_CACHEDIR="$TMPROOT/cache"
-export TMPDIR="$TMPROOT"
-
-if [ -f "$OUT" ]; then
-    echo "$OUT already exists — refusing to overwrite. rm it first to rebuild."
-    ls -la "$OUT"
+if [ -f "$SIF" ]; then
+    echo "$SIF already exists — refusing to overwrite. rm to rebuild."
+    ls -la "$SIF"
     exit 0
 fi
 
-echo "Building $OUT from $DEF"
-echo "Base: /data/derivatives/containers/pytorch_26.03.sif"
-echo "Tmp:  $TMPROOT"
+# Build context must include Dockerfile + sgm source
+echo "Staging build context at $CTX"
+cp "$REPO/containers/Dockerfile.mindeye_pytorch" "$CTX/Dockerfile"
+# Copy sgm source into the build context (only needs the sgm package,
+# not the whole rtcloud-projects tree)
+rm -rf "$CTX/mindeye_generative_models"
+cp -r /data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/models/generative_models \
+      "$CTX/mindeye_generative_models"
+ls "$CTX"
+
 date
-
-apptainer build --fakeroot "$OUT" "$DEF"
-
+echo "Building docker image: $IMAGE_TAG"
+docker build --platform linux/arm64 -t "$IMAGE_TAG" "$CTX"
 date
-echo "Build complete:"
-ls -la "$OUT"
+docker images "$IMAGE_TAG"
 
+echo ""
+echo "Converting docker → SIF at $SIF…"
+# apptainer pull from docker-daemon avoids NFS fakeroot issues since
+# the conversion reads docker's overlayfs (already on NAS) and writes
+# the SIF directly. We point TMPDIR at NAS too for the squashfs build.
+export APPTAINER_TMPDIR=/data/derivatives/apptainer_tmp
+mkdir -p "$APPTAINER_TMPDIR"
+
+apptainer build "$SIF" "docker-daemon://$IMAGE_TAG"
+ls -la "$SIF"
+
+echo ""
 echo "Smoke test:"
-apptainer exec "$OUT" python -c "
+apptainer exec "$SIF" python -c "
 import torch, open_clip, diffusers, accelerate
 from diffusers.models.vae import Decoder
-print(f'torch    {torch.__version__}')
-print(f'CUDA     {torch.version.cuda}  cudnn {torch.backends.cudnn.version()}')
-print(f'open_clip {open_clip.__version__}')
-print(f'diffusers {diffusers.__version__}')
-print(f'accelerate {accelerate.__version__}')
-print('Decoder imported OK from diffusers.models.vae')
-print('GPU visible:', torch.cuda.is_available())
+print(f'torch       {torch.__version__}')
+print(f'cuda        {torch.version.cuda}')
+print(f'open_clip   {open_clip.__version__}')
+print(f'diffusers   {diffusers.__version__}')
+print(f'accelerate  {accelerate.__version__}')
+print('Decoder import OK')
 "
-
-echo "Cleaning up scratch..."
-rm -rf "$TMPROOT/cache" "$TMPROOT"/build-temp* 2>/dev/null || true
 echo "Done."
+
+# Optional: clean up build context if successful
+rm -rf "$CTX/mindeye_generative_models"

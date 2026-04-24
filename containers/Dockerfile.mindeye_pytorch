@@ -1,0 +1,49 @@
+# Extended NGC PyTorch with MindEye runtime deps baked in.
+# Same pattern as Raramuri arm64 build: docker build → apptainer convert.
+# Avoids apptainer --fakeroot + NFS tmpdir issues hit on 2026-04-24.
+
+FROM nvcr.io/nvidia/pytorch:26.03-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Bootstrap uv
+RUN python -m pip install --no-cache-dir --quiet uv
+
+# MedARC paper pins from rtcloud-projects/mindeye/conf/pyproject.toml.
+# diffusers 0.23.0 still exposes diffusers.models.vae.Decoder.
+RUN uv pip install --system --no-cache --quiet \
+    open_clip_torch \
+    "accelerate==0.24.1" \
+    omegaconf \
+    "einops==0.8.1" \
+    "transformers>=4.40" \
+    timm \
+    nilearn \
+    nibabel \
+    imageio \
+    webdataset \
+    "dalle2-pytorch==1.15.6" \
+    scikit-image \
+    "diffusers==0.23.0" \
+    h5py \
+    scipy
+
+# OpenAI CLIP — top-level "import clip" in models.py; github only.
+RUN uv pip install --system --no-cache --quiet \
+    "git+https://github.com/openai/CLIP.git"
+
+# sgm (Stability generative-models) — copy local source then install.
+# Build context must include this path; build sbatch handles it.
+COPY mindeye_generative_models/ /opt/sgm_src/
+RUN uv pip install --system --no-cache --quiet /opt/sgm_src/ || \
+    echo "WARN: sgm install failed; sys.modules stub fallback in retrieval script"
+
+# Smoke check at build time so a broken image fails immediately.
+RUN python -c "\
+import torch, open_clip, diffusers, accelerate; \
+from diffusers.models.vae import Decoder; \
+print(f'torch {torch.__version__} | cuda {torch.version.cuda} | diffusers {diffusers.__version__}'); \
+print('Decoder imported OK')"
+
+LABEL maintainer="Morgan Hough <morgan.hough@gmail.com>"
+LABEL source="github.com/m9h/hippy-feat — containers/Dockerfile.mindeye_pytorch"
