@@ -18,22 +18,27 @@ RUN uv venv --python "$(which python)" --system-site-packages "$VENV_DIR"
 # Make this venv the default `python` inside the container.
 ENV PATH="$VENV_DIR/bin:$PATH"
 
-# MedARC paper pins from rtcloud-projects/mindeye/conf/pyproject.toml.
-# diffusers 0.23.0 still exposes diffusers.models.vae.Decoder.
+# MedARC paper pins, taken VERBATIM from
+# rtcloud-projects/mindeye/conf/pyproject.toml. The full transitive set
+# is critical: diffusers==0.23.0 needs huggingface-hub<0.26.0 (later
+# versions drop hf_cache_home) and transformers==4.37.2 (later versions
+# break some MindEye API surfaces).
 RUN uv pip install --python "$VENV_DIR/bin/python" --no-cache --quiet \
-    open_clip_torch \
     "accelerate==0.24.1" \
-    omegaconf \
+    "diffusers==0.23.0" \
+    "huggingface-hub<0.26.0" \
+    "transformers==4.37.2" \
+    "tokenizers==0.15.2" \
+    "open-clip-torch==2.24.0" \
+    "dalle2-pytorch==1.15.6" \
     "einops==0.8.1" \
-    "transformers>=4.40" \
+    omegaconf \
     timm \
     nilearn \
     nibabel \
     imageio \
     webdataset \
-    "dalle2-pytorch==1.15.6" \
     scikit-image \
-    "diffusers==0.23.0" \
     h5py \
     scipy
 
