@@ -35,37 +35,53 @@ DOI_URL_ENC=$(printf '%s' "$DOI" | sed 's|/|%2F|g; s|:|%3A|g')
 ARCHIVE_URL="https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/download"
 
 echo "Per-file download via Dryad API (bulk endpoint requires auth)."
-curl -fsSL "https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/versions" \
+UA="Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+curl -fsSL -A "$UA" "https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/versions" \
     -o versions.json
-python3 - <<'PY'
-import json, urllib.request, os, sys
-with open("versions.json") as f:
-    versions = json.load(f)
-latest = versions["_embedded"]["stash:versions"][-1]
-files_url = "https://datadryad.org" + latest["_links"]["stash:files"]["href"]
-with urllib.request.urlopen(files_url) as resp:
+
+# Build list of (name, file_id, size) tuples from the API, then shell out
+# to curl for the actual file downloads. curl with --retry + Mozilla UA
+# sidesteps Dryad's bot-blocking that returns 403 for urllib's default UA.
+python3 - <<'PY' > /tmp/peng_dl_list.tsv
+import json, urllib.request, sys
+req = urllib.request.Request(
+    open("versions.json").read() and "https://datadryad.org" +
+    json.load(open("versions.json"))["_embedded"]["stash:versions"][-1]
+    ["_links"]["stash:files"]["href"],
+    headers={"User-Agent": "Mozilla/5.0"},
+)
+with urllib.request.urlopen(req) as resp:
     listing = json.load(resp)
-files = listing["_embedded"]["stash:files"]
-total_bytes = sum(f.get("size", 0) for f in files)
-print(f"fetching {len(files)} files, total {total_bytes/1e9:.2f} GB")
-for i, f in enumerate(files, 1):
+for f in listing["_embedded"]["stash:files"]:
     name = f["path"]
-    # Unauthenticated public download URL uses /downloads/file_stream/{id}
-    # — the /api/v2/files/{id}/download endpoint from `stash:download` returns
-    # 401 without an API token. The numeric ID is at the tail of the "self"
-    # link like "/api/v2/files/3533344".
-    self_href = f["_links"]["self"]["href"]
-    file_id = self_href.rstrip("/").split("/")[-1]
-    stream_url = f"https://datadryad.org/downloads/file_stream/{file_id}"
-    out_path = os.path.join("raw", name)
-    if os.path.exists(out_path) and os.path.getsize(out_path) == f.get("size", 0):
-        print(f"[{i}/{len(files)}] SKIP {name} (already downloaded)")
-        continue
-    print(f"[{i}/{len(files)}] GET {name} ({f.get('size',0)/1e9:.2f} GB) from {stream_url}")
-    urllib.request.urlretrieve(stream_url, out_path)
-    print(f"  done -> {os.path.getsize(out_path)/1e9:.2f} GB")
-print("all files downloaded")
+    file_id = f["_links"]["self"]["href"].rstrip("/").split("/")[-1]
+    size = f.get("size", 0)
+    sys.stdout.write(f"{name}\t{file_id}\t{size}\n")
 PY
+
+TOTAL=$(awk -F'\t' '{sum+=$3} END {print sum/1e9}' /tmp/peng_dl_list.tsv)
+COUNT=$(wc -l < /tmp/peng_dl_list.tsv)
+echo "fetching $COUNT files, total ${TOTAL} GB"
+
+while IFS=$'\t' read -r name file_id size; do
+    out="raw/$name"
+    if [ -f "$out" ] && [ "$(stat -c%s "$out")" = "$size" ]; then
+        echo "SKIP $name (already complete)"
+        continue
+    fi
+    url="https://datadryad.org/downloads/file_stream/$file_id"
+    size_gb=$(awk -v s="$size" 'BEGIN{printf "%.2f", s/1e9}')
+    echo "GET $name ($size_gb GB) id=$file_id"
+    curl -fsSL -A "$UA" \
+        --retry 5 --retry-delay 15 --retry-all-errors \
+        --connect-timeout 30 --max-time 1800 \
+        -o "$out" "$url" || {
+            echo "FAILED $name — will be retried next job"
+            continue
+        }
+    actual=$(stat -c%s "$out")
+    echo "  $name done -> $actual bytes"
+done < /tmp/peng_dl_list.tsv
 
 echo "---"
 du -sh "$OUT/raw/"
