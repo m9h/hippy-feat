@@ -123,11 +123,23 @@ def load_condition_betas(condition: str, session: str = "ses-03",
 
 def filter_to_special515(betas: np.ndarray, trial_ids: np.ndarray
                          ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Keep only special515 trials (paper's test set: 50 images × 3 repeats)."""
+    """Z-score voxelwise across the full session, then keep only special515 trials.
+
+    Paper §2.5 / 2.3.2: 'Voxelwise betas z-scored cumulatively as the session
+    progresses.' At RT this is done per-TR with a growing window; for batch
+    inference we approximate with a single across-session z-score per voxel.
+    Without this, raw OLS betas (mean ~5, std ~20) feed the ridge with the
+    wrong distribution and retrieval drops sharply.
+    """
+    mu = betas.mean(axis=0, keepdims=True)
+    sd = betas.std(axis=0, keepdims=True) + 1e-8
+    z = (betas - mu) / sd
     mask = np.array([str(t).startswith("all_stimuli/special515/") for t in trial_ids])
-    filtered_betas = betas[mask]
+    filtered_betas = z[mask]
     filtered_ids = np.asarray([str(t) for t in trial_ids[mask]])
     unique_images = np.array(sorted(set(filtered_ids)))
+    print(f"  z-scored voxelwise (session-level): "
+          f"raw mean={mu.mean():.3f} std={sd.mean():.3f} -> z mean=0 std=1")
     print(f"  test trials: {filtered_betas.shape[0]}  unique images: {len(unique_images)}")
     return filtered_betas, filtered_ids, unique_images
 
