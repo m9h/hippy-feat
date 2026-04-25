@@ -3,7 +3,7 @@
 #SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/data/derivatives/containers/build_logs/%x-%j.out
 
 # Build extended NGC PyTorch SIF with MindEye runtime deps baked in,
@@ -54,6 +54,11 @@ echo "Converting docker → SIF at $SIF…"
 # the SIF directly. We point TMPDIR at NAS too for the squashfs build.
 export APPTAINER_TMPDIR=/data/derivatives/apptainer_tmp
 mkdir -p "$APPTAINER_TMPDIR"
+
+# Use lz4 compression instead of xz default — ~10x faster mksquashfs
+# at the cost of ~30% larger SIF. For a 14 GB image that's ~1.5 GB
+# extra, saves ~45+ min on the convert. NFS speed is the constraint.
+export APPTAINER_MKSQUASHFS_ARGS="-comp lz4 -Xhc"
 
 apptainer build "$SIF" "docker-daemon://$IMAGE_TAG"
 ls -la "$SIF"
