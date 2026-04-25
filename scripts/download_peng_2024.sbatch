@@ -34,24 +34,15 @@ cd "$OUT"
 DOI_URL_ENC=$(printf '%s' "$DOI" | sed 's|/|%2F|g; s|:|%3A|g')
 ARCHIVE_URL="https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/download"
 
-echo "Authenticated download via Dryad OAuth2 + /api/v2/files/{id}/download."
+echo "Authenticated download via Dryad /api/v2/files/{id}/download + Bearer."
 
-# Dryad uses OAuth2 client_credentials. The token at ~/.dryad-token is
-# the API token (which Dryad calls a "secret" in their docs); we
-# exchange it for an access_token, then use Bearer auth on the file
-# download endpoints. Endpoint: /oauth/token with grant_type=client_credentials.
-DRYAD_SECRET=$(cat ~/.dryad-token)
-ACCESS_JSON=$(curl -fsSL -X POST \
-    -d "client_id=$DRYAD_SECRET&grant_type=client_credentials&client_secret=$DRYAD_SECRET" \
-    https://datadryad.org/oauth/token 2>&1) || ACCESS_JSON=""
-ACCESS_TOKEN=$(echo "$ACCESS_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('access_token',''))" 2>/dev/null)
-
-if [ -z "$ACCESS_TOKEN" ]; then
-    echo "OAuth client_credentials exchange failed — assuming the token is"
-    echo "already a long-lived bearer token (personal API token)."
-    ACCESS_TOKEN="$DRYAD_SECRET"
-fi
-echo "auth token resolved (length: ${#ACCESS_TOKEN})"
+# The token at ~/.dryad-token is a personal API token (long-lived
+# bearer). The /api/v2/files/{id}/download endpoint returns 302 to a
+# presigned dryad-assetstore S3 URL when this header is present;
+# `curl -L` follows the redirect. Verified manually:
+#   HTTP 302 → s3.us-west-2.amazonaws.com (signed for 24h) → real bytes.
+ACCESS_TOKEN=$(cat ~/.dryad-token)
+echo "auth token loaded (length: ${#ACCESS_TOKEN})"
 
 UA="Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36"
 curl -fsSL -A "$UA" "https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/versions" \
