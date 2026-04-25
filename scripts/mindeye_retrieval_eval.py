@@ -151,39 +151,32 @@ def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda
     hand-rolled extraction stopped after the transformer (no ln_post,
     no proj), giving misaligned embeddings → near-chance retrieval.
     """
-    from sgm.modules.encoders.modules import FrozenOpenCLIPImageEmbedder
+    # sgm package import was failing in the container ('sgm is not a package').
+    # FrozenOpenCLIPImageEmbedder is just open_clip with model.visual.output_tokens = True
+    # plus standard CLIP preprocessing — replicate that directly.
+    import open_clip
     from PIL import Image
-    import torchvision.transforms as T
 
-    embedder = FrozenOpenCLIPImageEmbedder(
-        arch="ViT-bigG-14",
-        version="laion2b_s39b_b160k",
-        output_tokens=True,
-        only_tokens=True,
-    ).to(device)
-    embedder.eval()
-
-    # Standard CLIP-ViT preprocessing (matches what the paper does in
-    # recon_inference.ipynb — embedder accepts a tensor batch).
-    preprocess = T.Compose([
-        T.Resize(224, interpolation=T.InterpolationMode.BICUBIC),
-        T.CenterCrop(224),
-        T.ToTensor(),
-        T.Normalize(mean=(0.48145466, 0.4578275, 0.40821073),
-                    std=(0.26862954, 0.26130258, 0.27577711)),
-    ])
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        "ViT-bigG-14", pretrained="laion2b_s39b_b160k", device=device
+    )
+    model.eval()
+    # The critical flag — makes encode_image return (pooled, tokens) where
+    # tokens are post-ln_post-and-proj, matching what BrainNetwork.clip_proj
+    # is trained against. Without this, my earlier extraction stopped after
+    # the transformer and gave near-chance retrieval.
+    model.visual.output_tokens = True
 
     embeddings = []
     with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
         for p in image_paths:
             img = Image.open(p).convert("RGB")
             inp = preprocess(img).unsqueeze(0).to(device)
-            feats = embedder(inp)
-            # FrozenOpenCLIPImageEmbedder returns either tokens directly
-            # (only_tokens=True) or a tuple (pooled, tokens) (only_tokens=False).
-            if isinstance(feats, tuple):
-                feats = feats[1]  # tokens
-            embeddings.append(feats.float().cpu().numpy())
+            out = model.encode_image(inp)
+            # With output_tokens=True, encode_image returns (pooled, tokens)
+            # for ViT-bigG/14: pooled is (B, 1664), tokens is (B, 256, 1664)
+            tokens = out[1] if isinstance(out, tuple) else out
+            embeddings.append(tokens.float().cpu().numpy())
     return np.concatenate(embeddings, axis=0)
 
 
