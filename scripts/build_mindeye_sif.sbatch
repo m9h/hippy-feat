@@ -52,7 +52,7 @@ echo "Converting docker → SIF at $SIF…"
 # apptainer pull from docker-daemon avoids NFS fakeroot issues since
 # the conversion reads docker's overlayfs (already on NAS) and writes
 # the SIF directly. We point TMPDIR at NAS too for the squashfs build.
-export APPTAINER_TMPDIR=/data/derivatives/apptainer_tmp
+export APPTAINER_TMPDIR=/tmp/apptainer_$SLURM_JOB_ID
 mkdir -p "$APPTAINER_TMPDIR"
 
 # Use lz4 compression instead of xz default — ~10x faster mksquashfs
