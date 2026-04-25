@@ -86,4 +86,5 @@ print(f'torch arch list: {torch.cuda.get_arch_list()}'); \
 x = torch.randn(64, device='cuda'); y = (x @ x).cpu().item(); \
 print(f'cuda matmul OK ({y:.3f}) — kernel actually launched on this GPU')"
 
-LABEL maintainer="Morgan Hough <morgan.hough@gmai
+LABEL maintainer="Morgan Hough <morgan.hough@gmail.com>"
+LABEL source="github.com/m9h/hippy-feat — containers/Dockerfile.mindeye_pytorch"
