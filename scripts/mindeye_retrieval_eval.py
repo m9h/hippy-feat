@@ -138,44 +138,51 @@ def filter_to_special515(betas: np.ndarray, trial_ids: np.ndarray
 
 def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda"
                                    ) -> np.ndarray:
-    """Return OpenCLIP ViT-bigG/14 penultimate-layer embeddings, shape (N, 256, 1664).
+    """Return OpenCLIP ViT-bigG/14 token embeddings, shape (N, 256, 1664).
 
-    open_clip's VisionTransformer exposes the forward pipeline but not a
-    clean `forward_features` hook, so we run the layers manually and
-    grab tokens after the transformer, before `ln_post` / `proj`.
+    Uses Stability sgm's FrozenOpenCLIPImageEmbedder with the EXACT
+    config the paper uses (recon_inference.ipynb):
+        arch="ViT-bigG-14", version="laion2b_s39b_b160k",
+        output_tokens=True, only_tokens=True.
+
+    This runs the full open_clip pipeline (transformer → ln_post → proj)
+    and returns patch tokens with CLS dropped — matching what the
+    BrainNetwork's clip_proj output is trained against. Earlier
+    hand-rolled extraction stopped after the transformer (no ln_post,
+    no proj), giving misaligned embeddings → near-chance retrieval.
     """
-    import open_clip
+    from sgm.modules.encoders.modules import FrozenOpenCLIPImageEmbedder
     from PIL import Image
+    import torchvision.transforms as T
 
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        "ViT-bigG-14", pretrained="laion2b_s39b_b160k", device=device
-    )
-    model.eval()
-    visual = model.visual  # open_clip.transformer.VisionTransformer
+    embedder = FrozenOpenCLIPImageEmbedder(
+        arch="ViT-bigG-14",
+        version="laion2b_s39b_b160k",
+        output_tokens=True,
+        only_tokens=True,
+    ).to(device)
+    embedder.eval()
 
-    @torch.no_grad()
-    def _encode_penultimate(x: torch.Tensor) -> torch.Tensor:
-        # Patchify
-        x = visual.conv1(x)                                 # (B, C, H', W')
-        x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)  # (B, N, C)
-        # Prepend CLS token
-        cls = visual.class_embedding.to(x.dtype).expand(x.shape[0], 1, -1)
-        x = torch.cat([cls, x], dim=1)                      # (B, N+1, C)
-        x = x + visual.positional_embedding.to(x.dtype)
-        x = visual.ln_pre(x)
-        # open_clip layer-norms before and after transformer; transformer
-        # expects (batch, seq, dim) in newer versions, (seq, batch, dim) older.
-        # Use the model's own call signature.
-        x = visual.transformer(x)
-        # Drop CLS → (B, 256, 1664) for ViT-bigG/14 at 224×224
-        return x[:, 1:, :]
+    # Standard CLIP-ViT preprocessing (matches what the paper does in
+    # recon_inference.ipynb — embedder accepts a tensor batch).
+    preprocess = T.Compose([
+        T.Resize(224, interpolation=T.InterpolationMode.BICUBIC),
+        T.CenterCrop(224),
+        T.ToTensor(),
+        T.Normalize(mean=(0.48145466, 0.4578275, 0.40821073),
+                    std=(0.26862954, 0.26130258, 0.27577711)),
+    ])
 
     embeddings = []
     with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
         for p in image_paths:
             img = Image.open(p).convert("RGB")
             inp = preprocess(img).unsqueeze(0).to(device)
-            feats = _encode_penultimate(inp)
+            feats = embedder(inp)
+            # FrozenOpenCLIPImageEmbedder returns either tokens directly
+            # (only_tokens=True) or a tuple (pooled, tokens) (only_tokens=False).
+            if isinstance(feats, tuple):
+                feats = feats[1]  # tokens
             embeddings.append(feats.float().cpu().numpy())
     return np.concatenate(embeddings, axis=0)
 
