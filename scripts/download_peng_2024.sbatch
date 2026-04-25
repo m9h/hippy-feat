@@ -34,22 +34,37 @@ cd "$OUT"
 DOI_URL_ENC=$(printf '%s' "$DOI" | sed 's|/|%2F|g; s|:|%3A|g')
 ARCHIVE_URL="https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/download"
 
-echo "Per-file download via Dryad API (bulk endpoint requires auth)."
-UA="Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+echo "Authenticated download via Dryad OAuth2 + /api/v2/files/{id}/download."
+
+# Dryad uses OAuth2 client_credentials. The token at ~/.dryad-token is
+# the API token (which Dryad calls a "secret" in their docs); we
+# exchange it for an access_token, then use Bearer auth on the file
+# download endpoints. Endpoint: /oauth/token with grant_type=client_credentials.
+DRYAD_SECRET=$(cat ~/.dryad-token)
+ACCESS_JSON=$(curl -fsSL -X POST \
+    -d "client_id=$DRYAD_SECRET&grant_type=client_credentials&client_secret=$DRYAD_SECRET" \
+    https://datadryad.org/oauth/token 2>&1) || ACCESS_JSON=""
+ACCESS_TOKEN=$(echo "$ACCESS_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('access_token',''))" 2>/dev/null)
+
+if [ -z "$ACCESS_TOKEN" ]; then
+    echo "OAuth client_credentials exchange failed — assuming the token is"
+    echo "already a long-lived bearer token (personal API token)."
+    ACCESS_TOKEN="$DRYAD_SECRET"
+fi
+echo "auth token resolved (length: ${#ACCESS_TOKEN})"
+
+UA="Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36"
 curl -fsSL -A "$UA" "https://datadryad.org/api/v2/datasets/doi%3A${DOI_URL_ENC}/versions" \
     -o versions.json
 
-# Build list of (name, file_id, size) tuples from the API, then shell out
-# to curl for the actual file downloads. curl with --retry + Mozilla UA
-# sidesteps Dryad's bot-blocking that returns 403 for urllib's default UA.
+# Build list of (name, file_id, size) tuples from the API.
 python3 - <<'PY' > /tmp/peng_dl_list.tsv
 import json, urllib.request, sys
-req = urllib.request.Request(
-    open("versions.json").read() and "https://datadryad.org" +
-    json.load(open("versions.json"))["_embedded"]["stash:versions"][-1]
-    ["_links"]["stash:files"]["href"],
-    headers={"User-Agent": "Mozilla/5.0"},
-)
+with open("versions.json") as f:
+    versions = json.load(f)
+latest = versions["_embedded"]["stash:versions"][-1]
+files_url = "https://datadryad.org" + latest["_links"]["stash:files"]["href"]
+req = urllib.request.Request(files_url, headers={"User-Agent": "Mozilla/5.0"})
 with urllib.request.urlopen(req) as resp:
     listing = json.load(resp)
 for f in listing["_embedded"]["stash:files"]:
@@ -69,17 +84,27 @@ while IFS=$'\t' read -r name file_id size; do
         echo "SKIP $name (already complete)"
         continue
     fi
-    url="https://datadryad.org/downloads/file_stream/$file_id"
+    # Authenticated endpoint — bypasses Anubis bot-challenge.
+    url="https://datadryad.org/api/v2/files/$file_id/download"
     size_gb=$(awk -v s="$size" 'BEGIN{printf "%.2f", s/1e9}')
     echo "GET $name ($size_gb GB) id=$file_id"
     curl -fsSL -A "$UA" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
         --retry 5 --retry-delay 15 --retry-all-errors \
         --connect-timeout 30 --max-time 1800 \
         -o "$out" "$url" || {
             echo "FAILED $name — will be retried next job"
             continue
         }
+    # Sanity check: did we actually get the file (not a 4kB HTML challenge)?
     actual=$(stat -c%s "$out")
+    if [ "$actual" -lt 100000 ] && [ "$size" -gt 100000 ]; then
+        echo "  WARN: $name shrank to $actual bytes (expected $size); likely auth challenge"
+        head -c 200 "$out"
+        rm -f "$out"
+        echo "  → token may be wrong; aborting"
+        exit 2
+    fi
     echo "  $name done -> $actual bytes"
 done < /tmp/peng_dl_list.tsv
 
