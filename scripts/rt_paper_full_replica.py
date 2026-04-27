@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Cells 10–12 of the pre-registered variant sweep — faithful nilearn replicas.
+
+Reproduces the paper's actual RT and Offline pipelines as closely as
+possible, by calling nilearn's `FirstLevelModel` with the exact arguments
+mindeye.py:745 uses, then layering the cumulative running z-score and
+optional repeat-averaging that the paper does outside the GLM.
+
+Cells:
+    10. RT_paper_replica_partial      — nilearn AR(1) + cumulative z-score, NO repeat-avg
+    11. RT_paper_replica_full         — nilearn AR(1) + cumulative z-score + repeat-avg (canonical)
+    12. Offline_paper_replica_full    — same as 11 but on fmriprep BOLD instead of rtmotion
+
+Per-trial fits are slow (nilearn FirstLevelModel.fit per probe trial).
+Expect ~30 min/cell on CPU; this script is offline-only. Submitted via
+`scripts/rt_paper_full_replica.sbatch`.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import warnings
+from pathlib import Path
+
+import numpy as np
+import nibabel as nib
+import pandas as pd
+
+warnings.filterwarnings("ignore", category=UserWarning, module="nilearn")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+
+PAPER_ROOT = Path("/data/derivatives/rtmindeye_paper")
+RT3T = PAPER_ROOT / "rt3t" / "data"
+FMRIPREP_ROOT = (PAPER_ROOT / "fmriprep_mindeye" / "data_sub-005"
+                 / "bids" / "derivatives" / "fmriprep" / "sub-005")
+EVENTS_DIR = RT3T / "events"
+BRAIN_MASK = RT3T / "sub-005_final_mask.nii.gz"
+RELMASK = RT3T / "sub-005_ses-01_task-C_relmask.npy"
+MC_DIR = Path("/data/3t/derivatives/motion_corrected_resampled")
+OUT_DIR = PAPER_ROOT / "task_2_1_betas" / "prereg"
+
+
+def load_brain_paper_mask() -> tuple[np.ndarray, np.ndarray]:
+    flat_brain = (nib.load(BRAIN_MASK).get_fdata() > 0).flatten()
+    rel = np.load(RELMASK)
+    return flat_brain, rel
+
+
+def load_rtmotion_4d(session: str, run: int) -> nib.Nifti1Image:
+    pattern = f"{session}_run-{run:02d}_*_mc_boldres.nii.gz"
+    vols = sorted(MC_DIR.glob(pattern))
+    if not vols:
+        raise FileNotFoundError(f"no mc_boldres for {session} run-{run:02d}")
+    frames = [nib.load(v).get_fdata().astype(np.float32) for v in vols]
+    arr = np.stack(frames, axis=-1)                        # (X, Y, Z, T)
+    affine = nib.load(vols[0]).affine
+    return nib.Nifti1Image(arr, affine)
+
+
+def load_fmriprep_4d(session: str, run: int) -> nib.Nifti1Image:
+    p = (FMRIPREP_ROOT / session / "func"
+         / f"sub-005_{session}_task-C_run-{run:02d}"
+           f"_space-T1w_desc-preproc_bold.nii.gz")
+    return nib.load(p)
+
+
+def load_mc_params(session: str, run: int) -> np.ndarray | None:
+    """MCFLIRT motion params (.par files); None if not on disk."""
+    par_dir = Path("/data/3t/derivatives/motion_corrected_resampled_par")
+    par_path = par_dir / f"{session}_run-{run:02d}.par"
+    if par_path.exists():
+        return np.loadtxt(par_path).astype(np.float32)
+    return None
+
+
+def fit_lss_nilearn(bold_4d: nib.Nifti1Image, events: pd.DataFrame,
+                     probe_trial: int, mc_params: np.ndarray | None,
+                     tr: float = 1.5, mask_img: nib.Nifti1Image | None = None
+                     ) -> np.ndarray:
+    """One LSS fit using nilearn — replicates mindeye.py:745."""
+    from nilearn.glm.first_level import FirstLevelModel
+
+    cropped = events.copy()
+    cropped["onset"] = cropped["onset"].astype(float) - cropped["onset"].iloc[0]
+    cropped["trial_type"] = np.where(
+        np.arange(len(cropped)) == probe_trial, "probe", "reference"
+    )
+    cropped["duration"] = 1.0  # avoid nilearn's null-duration warning
+
+    confounds = (pd.DataFrame(mc_params,
+                              columns=[f"mc_{i}" for i in range(mc_params.shape[1])])
+                 if mc_params is not None else None)
+
+    glm = FirstLevelModel(
+        t_r=tr, slice_time_ref=0,
+        hrf_model="glover",
+        drift_model="cosine", drift_order=1, high_pass=0.01,
+        signal_scaling=False, smoothing_fwhm=None,
+        noise_model="ar1",
+        n_jobs=1, verbose=0,
+        memory_level=0, minimize_memory=True,
+        mask_img=mask_img if mask_img is not None else False,
+    )
+    glm.fit(run_imgs=bold_4d, events=cropped, confounds=confounds)
+    eff = glm.compute_contrast("probe", output_type="effect_size")
+    return eff.get_fdata()                                 # (X, Y, Z) volume
+
+
+def cumulative_zscore_with_optional_repeat_avg(
+        beta_history: list[np.ndarray],
+        image_history: list[str],
+        do_repeat_avg: bool,
+        ) -> tuple[np.ndarray, list[str]]:
+    """Apply the paper's cumulative running z-score (and optional repeat-
+    averaging) to the accumulated trial-betas at the END of all runs.
+
+    Replicates mindeye.py:770-784.
+
+    Returns the post-processed (n_trials, V) beta matrix and the
+    image label per (post-processed) trial — which may be shorter than
+    the input if repeat_avg collapses repeats.
+    """
+    arr = np.stack(beta_history, axis=0).astype(np.float32)   # (n, V)
+    z_mean = arr.mean(axis=0, keepdims=True)
+    z_std = arr.std(axis=0, keepdims=True) + 1e-6
+    z = (arr - z_mean) / z_std
+
+    if not do_repeat_avg:
+        return z, list(image_history)
+
+    seen: dict[str, list[int]] = {}
+    out_betas, out_ids = [], []
+    for i, img in enumerate(image_history):
+        seen.setdefault(img, []).append(i)
+        if len(seen[img]) == 1:
+            out_betas.append(z[i])
+            out_ids.append(img)
+        else:
+            avg = z[seen[img]].mean(axis=0)
+            # Replace the first instance's entry with the running average
+            first_pos = next(j for j, l in enumerate(out_ids) if l == img)
+            out_betas[first_pos] = avg
+    return np.stack(out_betas, axis=0), out_ids
+
+
+def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
+              do_repeat_avg: bool) -> tuple[np.ndarray, list[str], dict]:
+    flat_brain, rel = load_brain_paper_mask()
+    tr = 1.5
+    mask_img = nib.load(BRAIN_MASK)
+
+    beta_history: list[np.ndarray] = []
+    image_history: list[str] = []
+    config = {"cell": cell_name, "session": session, "runs": runs,
+              "do_repeat_avg": do_repeat_avg, "tr": tr,
+              "nilearn_args": {
+                  "hrf_model": "glover", "drift_model": "cosine",
+                  "drift_order": 1, "high_pass": 0.01,
+                  "noise_model": "ar1", "signal_scaling": False,
+              }}
+
+    for run in runs:
+        try:
+            bold_4d = bold_loader(session, run)
+        except FileNotFoundError as e:
+            print(f"  SKIP run-{run:02d}: {e}")
+            continue
+        events_path = EVENTS_DIR / f"sub-005_{session}_task-C_run-{run:02d}_events.tsv"
+        events = pd.read_csv(events_path, sep="\t")
+        mc_params = load_mc_params(session, run)
+        for trial_i in range(len(events)):
+            t0 = time.time()
+            beta_vol = fit_lss_nilearn(bold_4d, events, trial_i, mc_params,
+                                        tr=tr, mask_img=mask_img)
+            beta_masked = beta_vol.flatten()[flat_brain][rel]
+            beta_history.append(beta_masked.astype(np.float32))
+            image_history.append(str(events.iloc[trial_i].get("image_name",
+                                                                str(trial_i))))
+            print(f"  {cell_name} run-{run:02d} trial {trial_i:3d} "
+                  f"({time.time() - t0:.2f}s)")
+
+    betas, trial_ids = cumulative_zscore_with_optional_repeat_avg(
+        beta_history, image_history, do_repeat_avg=do_repeat_avg,
+    )
+    config["n_trials_post"] = int(betas.shape[0])
+    return betas, trial_ids, config
+
+
+CELLS = {
+    "RT_paper_replica_partial":   dict(loader=load_rtmotion_4d,
+                                         do_repeat_avg=False),
+    "RT_paper_replica_full":      dict(loader=load_rtmotion_4d,
+                                         do_repeat_avg=True),
+    "Offline_paper_replica_full": dict(loader=load_fmriprep_4d,
+                                         do_repeat_avg=True),
+}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cells", nargs="+", default=list(CELLS.keys()))
+    ap.add_argument("--session", default="ses-03")
+    ap.add_argument("--runs", nargs="+", type=int, default=list(range(1, 12)))
+    args = ap.parse_args()
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    for cell in args.cells:
+        if cell not in CELLS:
+            print(f"  SKIP unknown cell {cell}")
+            continue
+        print(f"\n=== {cell} ===")
+        cfg = CELLS[cell]
+        try:
+            betas, trial_ids, config = run_cell(
+                cell, cfg["loader"], args.session, args.runs,
+                do_repeat_avg=cfg["do_repeat_avg"],
+            )
+            np.save(OUT_DIR / f"{cell}_{args.session}_betas.npy", betas)
+            np.save(OUT_DIR / f"{cell}_{args.session}_trial_ids.npy",
+                    np.asarray(trial_ids))
+            with open(OUT_DIR / f"{cell}_{args.session}_config.json", "w") as f:
+                json.dump(config, f, indent=2)
+            print(f"  saved {cell}: betas {betas.shape}")
+        except Exception as e:
+            print(f"  FAILED {cell}: {e}")
+
+
+if __name__ == "__main__":
+    main()
