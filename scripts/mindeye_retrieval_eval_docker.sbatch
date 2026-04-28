@@ -29,9 +29,22 @@ set -euo pipefail
 CONDITION=${CONDITION:-A_fmriprep_glover}
 SESSION=${SESSION:-ses-03}
 IMAGE=mindeye-pytorch:26.03
+TAR=/data/derivatives/containers/mindeye-pytorch-26.03.tar
 OUT_JSON=/data/derivatives/rtmindeye_paper/task_2_1_betas/retrieval_${CONDITION}.json
 
 mkdir -p /data/derivatives/rtmindeye_paper/logs
+
+# Self-heal: if the image got pruned from the local docker cache, reload
+# from the NAS tarball before run.
+if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
+    if [ -f "$TAR" ]; then
+        echo "[setup] $IMAGE not in local cache — loading from $TAR"
+        docker load -i "$TAR"
+    else
+        echo "[setup] $IMAGE missing AND $TAR not found. Run rebuild_mindeye_image.sbatch first."
+        exit 1
+    fi
+fi
 
 docker run --rm --gpus all \
     -v /home/mhough:/home/mhough \

@@ -77,19 +77,22 @@ def variant_g_sanity(sub_dir: Path) -> dict:
     except ImportError as e:
         return {"variant_g_error": f"jaxoccoli import failed: {e}"}
 
-    # Find the first feedback run with an associated chosenMask
+    # chosenMask is generated in ses1 (recognition-only training); reused for
+    # feedback runs in ses2+. Find ses1's mask, then the first feedback run.
+    mask_path = sub_dir / "ses1" / "recognition" / "mask" / "chosenMask.npy"
+    if not mask_path.exists():
+        return {"variant_g_error": f"chosenMask not found at {mask_path}"}
+    mask_arr = np.load(mask_path)
     fb = None
-    mask_arr = None
-    for ses in ("ses1", "ses2", "ses3", "ses4", "ses5"):
+    session_used = None
+    for ses in ("ses2", "ses3", "ses4", "ses5"):
         runs = sorted((sub_dir / ses / "feedback").glob("run_*_bet.nii*"))
-        mask_path = sub_dir / ses / "recognition" / "mask" / "chosenMask.npy"
-        if runs and mask_path.exists():
+        if runs:
             fb = runs[0]
-            mask_arr = np.load(mask_path)
             session_used = ses
             break
     if fb is None:
-        return {"variant_g_error": "no feedback run + chosenMask found"}
+        return {"variant_g_error": "no feedback run found in ses2-ses5"}
 
     img = nib.load(fb)
     bold = img.get_fdata()  # (X, Y, Z, T)

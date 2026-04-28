@@ -45,6 +45,7 @@ from rt_glm_variants import (
     load_hrf_indices,
     load_brain_mask,
     _ols_fit,
+    _variant_g_forward,
 )
 
 # -----------------------------------------------------------------------------
@@ -179,12 +180,33 @@ def glm_glmsingle_style(timeseries: np.ndarray, onsets: np.ndarray, probe_trial:
     return result
 
 
+def glm_variant_g(timeseries: np.ndarray, onsets: np.ndarray, probe_trial: int,
+                  tr: float, n_trs: int, max_trs: int = 200
+                  ) -> tuple[np.ndarray, np.ndarray]:
+    """Bayesian conjugate AR(1) GLM. Returns (β_mean, β_var) for the probe trial.
+
+    Posterior variance is the novel signal that's typically discarded — Task 6
+    MVE retrains the ridge to consume it. Caller should save both arrays.
+    """
+    hrf = make_glover_hrf(tr, int(np.ceil(32.0 / tr)))
+    dm, probe_idx = build_design_matrix(onsets, tr, n_trs, hrf, probe_trial)
+    dm_pad = np.zeros((max_trs, dm.shape[1]), dtype=np.float32)
+    dm_pad[:n_trs] = dm
+    ts_pad = np.zeros((timeseries.shape[0], max_trs), dtype=np.float32)
+    ts_pad[:, :n_trs] = timeseries.astype(np.float32)
+    betas, vars_ = _variant_g_forward(jnp.asarray(dm_pad), jnp.asarray(ts_pad),
+                                      jnp.asarray(n_trs, dtype=jnp.int32))
+    return (np.asarray(betas[:, probe_idx], dtype=np.float32),
+            np.asarray(np.maximum(vars_[:, probe_idx], 1e-10), dtype=np.float32))
+
+
 # -----------------------------------------------------------------------------
 # Factorial driver
 # -----------------------------------------------------------------------------
 
 Condition = Literal["A_fmriprep_glover", "B_rtmotion_glmsingle",
-                    "RT_paper", "Offline_paper"]
+                    "RT_paper", "Offline_paper",
+                    "G_fmriprep", "G_rtmotion"]
 
 
 def run_condition(condition: Condition, session: str, runs: list[int],
@@ -198,9 +220,9 @@ def run_condition(condition: Condition, session: str, runs: list[int],
     flat_brain, rel = load_paper_finalmask()
     n_voxels = int(rel.sum())  # 2792
 
-    if condition in ("A_fmriprep_glover", "Offline_paper"):
+    if condition in ("A_fmriprep_glover", "Offline_paper", "G_fmriprep"):
         loader = load_fmriprep_bold
-    elif condition in ("B_rtmotion_glmsingle", "RT_paper"):
+    elif condition in ("B_rtmotion_glmsingle", "RT_paper", "G_rtmotion"):
         loader = lambda s, r: (load_rt_motion_bold(s, r), None)
     else:
         raise ValueError(f"Unknown condition: {condition}")
@@ -216,9 +238,9 @@ def run_condition(condition: Condition, session: str, runs: list[int],
     else:
         hrf_library = base_time = hrf_indices = None
 
-    all_betas, all_trial_ids = [], []
+    all_betas, all_trial_ids, all_vars = [], [], []
     for run in runs:
-        ts, _ = loader(session, run) if condition in ("A_fmriprep_glover", "Offline_paper") \
+        ts, _ = loader(session, run) if condition in ("A_fmriprep_glover", "Offline_paper", "G_fmriprep") \
                 else (loader(session, run)[0], None)
         events = pd.read_csv(EVENTS_DIR / f"sub-005_{session}_task-C_run-{run:02d}_events.tsv",
                              sep="\t")
@@ -228,6 +250,9 @@ def run_condition(condition: Condition, session: str, runs: list[int],
         for probe_idx_trial in range(len(onsets)):
             if condition in ("A_fmriprep_glover", "RT_paper"):
                 beta = glm_rt_glover(ts, onsets, probe_idx_trial, tr, n_trs)
+            elif condition in ("G_fmriprep", "G_rtmotion"):
+                beta, var = glm_variant_g(ts, onsets, probe_idx_trial, tr, n_trs)
+                all_vars.append(var)
             else:
                 beta = glm_glmsingle_style(ts, onsets, probe_idx_trial, tr, n_trs,
                                            hrf_indices, hrf_library, base_time)
@@ -242,6 +267,9 @@ def run_condition(condition: Condition, session: str, runs: list[int],
             )
             all_trial_ids.append(str(img_name))
 
+    if all_vars:
+        return (np.stack(all_betas, axis=0), all_trial_ids,
+                np.stack(all_vars, axis=0))
     return np.stack(all_betas, axis=0), all_trial_ids
 
 
@@ -254,7 +282,8 @@ def main():
     ap.add_argument("--conditions", nargs="+",
                     default=["A_fmriprep_glover", "B_rtmotion_glmsingle"],
                     choices=["A_fmriprep_glover", "B_rtmotion_glmsingle",
-                             "RT_paper", "Offline_paper"])
+                             "RT_paper", "Offline_paper",
+                             "G_fmriprep", "G_rtmotion"])
     ap.add_argument("--session", default="ses-03", help="Test session (paper uses ses-03)")
     ap.add_argument("--runs", nargs="+", type=int, default=list(range(1, 12)))
     ap.add_argument("--out-dir", default="/data/derivatives/rtmindeye_paper/task_2_1_betas")
@@ -267,7 +296,13 @@ def main():
         t0 = time.time()
         print(f"\n=== condition: {cond} ===")
         try:
-            betas, trial_ids = run_condition(cond, args.session, args.runs)
+            result = run_condition(cond, args.session, args.runs)
+            if len(result) == 3:
+                betas, trial_ids, vars_ = result
+                np.save(out_dir / f"{cond}_{args.session}_vars.npy", vars_)
+                print(f"  vars shape: {vars_.shape} (saved alongside betas)")
+            else:
+                betas, trial_ids = result
             np.save(out_dir / f"{cond}_{args.session}_betas.npy", betas)
             np.save(out_dir / f"{cond}_{args.session}_trial_ids.npy",
                     np.asarray(trial_ids))

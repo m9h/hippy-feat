@@ -193,12 +193,15 @@ def load_glmsingle_hrf_library(tsv_path: str) -> Tuple[np.ndarray, np.ndarray]:
     Load GLMsingle 20-HRF library.
 
     Returns:
-        base_time: (n_timepoints,) time axis 0..32s
+        base_time: (n_timepoints,) time axis 0..50s
         hrfs: (n_timepoints, 20) peak-normalized HRFs
     """
     hrfs = np.loadtxt(tsv_path, delimiter="\t")  # (501, 20)
     n_tp = hrfs.shape[0]
-    base_time = np.linspace(0.0, 32.0, n_tp, endpoint=True)
+    # GLMsingle's getcanonicalhrflibrary spans 0-50s at dt=0.1s — peaks fall
+    # at 2.6-5.6s for indices 0-19. Using a 0-32s axis compresses HRFs ~0.64x
+    # and broke Cond B retrieval (peaks shifted to 1.7-3.6s).
+    base_time = np.linspace(0.0, 50.0, n_tp, endpoint=True)
     # Peak-normalize each column
     peak = np.maximum(np.abs(hrfs).max(axis=0), 1e-12)
     hrfs = hrfs / peak

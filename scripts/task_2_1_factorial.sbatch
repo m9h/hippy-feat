@@ -20,8 +20,8 @@ mkdir -p /data/derivatives/rtmindeye_paper/logs
 
 .venv/bin/python scripts/task_2_1_factorial.py \
     --conditions ${FACTORIAL_CONDITIONS:-A_fmriprep_glover B_rtmotion_glmsingle} \
-    --session ses-03 \
-    --runs 1 2 3 4 5 6 7 8 9 10 11 \
+    --session ${SESSION:-ses-03} \
+    --runs ${RUNS:-1 2 3 4 5 6 7 8 9 10 11} \
     --out-dir /data/derivatives/rtmindeye_paper/task_2_1_betas
 
 # Override with `FACTORIAL_CONDITIONS="A_fmriprep_glover" sbatch ...` to rerun

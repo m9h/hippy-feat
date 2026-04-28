@@ -148,7 +148,10 @@ def filter_to_special515(betas: np.ndarray, trial_ids: np.ndarray
 # Ground-truth CLIP embeddings via open_clip
 # -----------------------------------------------------------------------------
 
-def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda"
+def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda",
+                                    cache_dir: Path = Path(
+                                        "/data/derivatives/rtmindeye_paper/task_2_1_betas/gt_cache"
+                                    )
                                    ) -> np.ndarray:
     """Return OpenCLIP ViT-bigG/14 token embeddings, shape (N, 256, 1664).
 
@@ -157,12 +160,22 @@ def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda
         arch="ViT-bigG-14", version="laion2b_s39b_b160k",
         output_tokens=True, only_tokens=True.
 
-    This runs the full open_clip pipeline (transformer → ln_post → proj)
-    and returns patch tokens with CLS dropped — matching what the
-    BrainNetwork's clip_proj output is trained against. Earlier
-    hand-rolled extraction stopped after the transformer (no ln_post,
-    no proj), giving misaligned embeddings → near-chance retrieval.
+    Caches per-image embeddings keyed on the file's basename so multiple
+    conditions hitting the same special515 test set don't reload OpenCLIP.
+    Useful when the GPU is busy with sibling work (smri-fm FastSurfer jobs).
     """
+    import hashlib
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    paths = list(image_paths)
+    cache_keys = [
+        cache_dir / f"{p.stem}_{hashlib.md5(str(p).encode()).hexdigest()[:8]}.npy"
+        for p in paths
+    ]
+    cached = [k.exists() for k in cache_keys]
+    if all(cached):
+        print(f"  loaded all {len(paths)} GT embeddings from cache ({cache_dir})")
+        return np.stack([np.load(k) for k in cache_keys])
+
     # sgm package import was failing in the container ('sgm is not a package').
     # FrozenOpenCLIPImageEmbedder is just open_clip with model.visual.output_tokens = True
     # plus standard CLIP preprocessing — replicate that directly.
@@ -180,16 +193,21 @@ def compute_ground_truth_embeddings(image_paths: list[Path], device: str = "cuda
     model.visual.output_tokens = True
 
     embeddings = []
-    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
-        for p in image_paths:
+    autocast_ctx = (torch.amp.autocast("cuda", dtype=torch.float16)
+                    if device == "cuda"
+                    else torch.amp.autocast("cpu", dtype=torch.bfloat16))
+    with torch.no_grad(), autocast_ctx:
+        for p, key in zip(paths, cache_keys):
             img = Image.open(p).convert("RGB")
             inp = preprocess(img).unsqueeze(0).to(device)
             out = model.encode_image(inp)
             # With output_tokens=True, encode_image returns (pooled, tokens)
             # for ViT-bigG/14: pooled is (B, 1664), tokens is (B, 256, 1664)
             tokens = out[1] if isinstance(out, tuple) else out
-            embeddings.append(tokens.float().cpu().numpy())
-    return np.concatenate(embeddings, axis=0)
+            arr = tokens.float().cpu().numpy()[0]
+            np.save(key, arr)
+            embeddings.append(arr)
+    return np.stack(embeddings, axis=0)
 
 
 # -----------------------------------------------------------------------------
