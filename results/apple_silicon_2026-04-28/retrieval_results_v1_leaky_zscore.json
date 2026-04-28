@@ -1,0 +1,122 @@
+[
+  {
+    "condition": "RT_paper_replica_full",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 50,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.76,
+    "top5_image_retrieval": 0.94,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "OLS_glover_rtm",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.5733333333333334,
+    "top5_image_retrieval": 0.8066666666666666,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "AR1freq_glover_rtm",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.62,
+    "top5_image_retrieval": 0.8533333333333334,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "AR1freq_glover_rtm_nilearn",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.6,
+    "top5_image_retrieval": 0.8466666666666667,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "VariantG_glover_rtm",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.6066666666666667,
+    "top5_image_retrieval": 0.8533333333333334,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "VariantG_glover_rtm_prior",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.6066666666666667,
+    "top5_image_retrieval": 0.8466666666666667,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "AR1freq_glmsingleS1_rtm",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.44,
+    "top5_image_retrieval": 0.7466666666666667,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "AR1freq_glover_rtm_glmdenoise_fracridge",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.62,
+    "top5_image_retrieval": 0.86,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "VariantG_glover_rtm_glmdenoise_fracridge",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.6133333333333333,
+    "top5_image_retrieval": 0.8666666666666667,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "VariantG_glover_rtm_acompcor",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.6133333333333333,
+    "top5_image_retrieval": 0.8733333333333333,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "RT_paper_replica_partial",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 150,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.5666666666666667,
+    "top5_image_retrieval": 0.8266666666666667,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  },
+  {
+    "condition": "Offline_paper_replica_full",
+    "session": "ses-03",
+    "device": "mps",
+    "n_test_trials": 50,
+    "n_unique_images": 50,
+    "top1_image_retrieval": 0.8,
+    "top5_image_retrieval": 0.94,
+    "checkpoint": "/Users/mhough/Workspace/data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+  }
+]

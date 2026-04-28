@@ -1,0 +1,7 @@
+Platform 'mps' is experimental and not all JAX functionality may be correctly supported!
+jax 0.9.2
+jaxlib 0.9.2
+backend mps
+devices [MpsDevice(id=0)]
+jax-mps 0.9.13
+jax-metal NOT INSTALLED

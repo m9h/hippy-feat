@@ -1,0 +1,4 @@
+torch 2.10.0
+open_clip 2.32.0
+diffusers 0.37.1
+mps True
