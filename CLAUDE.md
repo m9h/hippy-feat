@@ -12,10 +12,11 @@ GPU-accelerated fMRI preprocessing and differentiable connectivity analysis in J
 
 ## Key conventions
 
-- **Factory pattern**: `make_*() → (params, forward_fn)` — params are NamedTuples, no Equinox
-- **TDD**: red-green-refactor. Write failing tests first, then implement
-- **Test runner**: `python -m pytest tests/` (uv run pytest fails due to jaxlib wheel unavailability on this macOS)
-- **Pure JAX**: JIT/grad/vmap compatible everywhere. No Python control flow in hot paths
+- **Factory pattern preferred for pure-JAX primitives**: `make_*() → (params: NamedTuple, forward_fn)`. The vbjax/vpjax-shared idiom for the existing 22 modules. Don't relitigate working factory code.
+- **Equinox + Kidger SciML stack acceptable for new modules where they integrate cleanly**: specifically Diffrax (Phase 4 streaming EKF/SMC), Optimistix (fracridge λ search, Brent / Newton solvers), Lineax (structured linear solvers, banded operators), GPjax (MRF spatial priors for Variant G). Use `eqx.field(static=True)` and `eqx.filter_jit` to keep transforms clean. Mixed factory + Equinox code is fine — match the surrounding pattern.
+- **TDD**: red-green-refactor. Write failing tests first, then implement.
+- **Test runner**: `python -m pytest tests/` (uv run pytest fails due to jaxlib wheel unavailability on this macOS).
+- **Pure JAX in hot paths**: JIT/grad/vmap compatible everywhere. No Python control flow in JIT'd functions.
 
 ## Module groups
 

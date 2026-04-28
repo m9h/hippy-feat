@@ -204,3 +204,78 @@ from .dot_adapter import (
     simulate_dot_mesh_nodes,
     simulate_hbo_frame,
 )
+
+# Real-time per-TR Bayesian decoding (Variant G AR(1) conjugate)
+from .realtime import (
+    RTPipeline,
+    RTPipelineConfig,
+    build_lss_design_matrix,
+    confidence_mask,
+    make_glover_hrf,
+)
+from .rtcloud import make_rtcloud_decoder
+
+# Complex-valued fMRI: NORDIC denoising, phase regression, complex GLM
+from .complex import (
+    from_mag_phase,
+    from_real_imag,
+    to_mag_phase,
+    unwrap_phase_temporal,
+    detrend_phase_voxelwise,
+    voxelwise_zscore_complex,
+)
+from .nordic import (
+    estimate_noise_sigma_complex,
+    marchenko_pastur_threshold,
+    nordic_global,
+    nordic_streaming_window,
+)
+from .phase_regression import (
+    phase_as_design_column,
+    phase_regress_residuals,
+)
+from .complex_glm import (
+    complex_snr_map,
+    complex_variant_g_forward,
+)
+
+# GLMsingle stages 2 + 3 — adaptive noise regressors and fractional ridge.
+# Task 2.1 bake-off identified these as where GLMsingle's win lives.
+from .glmdenoise import (
+    GLMdenoiseResult,
+    extract_noise_components,
+    glmdenoise_fit,
+    per_voxel_r2,
+    select_noise_pool,
+)
+from .fracridge import (
+    fracridge_cv,
+    fracridge_solve,
+)
+from .compcor import (
+    acompcor_components,
+    append_compcor_to_design,
+    tcompcor_components,
+)
+from .multiway_nordic import (
+    hosvd_threshold_4d,
+    hosvd_threshold_5d,
+)
+from .multiway_nordic_patch import patch_tucker_threshold_4d
+from .motion_phase import (
+    apply_translation,
+    cross_power_spectrum,
+    estimate_translation,
+    hamming_window_3d,
+    register_translation,
+)
+from .streaming_kalman import (
+    StreamingKalmanState,
+    StreamingKalmanAR1State,
+    init_streaming_kalman,
+    init_streaming_kalman_ar1,
+    streaming_kalman_run,
+    streaming_kalman_ar1_run,
+    streaming_kalman_update,
+    streaming_kalman_ar1_update,
+)

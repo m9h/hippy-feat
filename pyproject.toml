@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hippy-feat"
-version = "0.2.0"
-description = "GPU-accelerated fMRI preprocessing and differentiable connectivity analysis in JAX"
+name = "jaxoccoli"
+version = "0.3.0"
+description = "GPU-accelerated fMRI preprocessing, Bayesian variance-aware GLM, and differentiable connectivity analysis in JAX. Drop-in for rt-cloud-based real-time neurofeedback."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -57,7 +57,7 @@ doc = [
     "sphinx-autodoc-typehints>=2.0",
 ]
 all = [
-    "hippy-feat[neuro,signatures,bayesian,dev,doc]",
+    "jaxoccoli[neuro,signatures,bayesian,dev,doc]",
 ]
 
 [project.urls]
