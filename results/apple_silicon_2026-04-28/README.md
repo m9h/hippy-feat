@@ -100,3 +100,52 @@ For each cell, expect:
 - larger differences → cells where the bug or platform divergence matters
 
 The bigger DGX-vs-paper anchor question is whether DGX cell 12 lands at 76% and cell 11 lands at 66% with the canonical checkpoint.
+
+---
+
+## Update 2026-04-28: decoder-free β-reliability + H1-H5
+
+After the DGX agent's commits 9511fe6/78f712a/e462681 (cells 13-17/20 + canonical retrieval harness + matching cum-z fix in `cumulative_zscore_with_optional_repeat_avg`), we ran the new `scripts/prereg_benchmark.py` locally on the same 12 cells of betas. **No checkpoint, no GPU**, just β-reliability + paired bootstrap on the locked H1-H5 hypotheses.
+
+This is the cleanest Mac↔DGX comparison artifact: it's checkpoint-independent, so the cell-11 inflation we saw in retrieval has no bearing here.
+
+### Per-cell β-reliability (Pearson r across the 3 special515 repeats)
+
+| Cell | rel | rel CI | id-hit |
+|---|---|---|---|
+| OLS_glover_rtm | +0.150 | [+0.117, +0.183] | 22.2% |
+| AR1freq_glover_rtm | +0.195 | [+0.170, +0.219] | 33.6% |
+| VariantG_glover_rtm | +0.195 | [+0.170, +0.220] | 33.0% |
+| VariantG_glover_rtm_prior | +0.194 | [+0.169, +0.218] | 33.6% |
+| AR1freq_glmsingleS1_rtm | +0.133 | [+0.113, +0.153] | 30.2% |
+| AR1freq + GLMdenoise+fracridge | **+0.217** | [+0.194, +0.238] | 29.1% |
+| VariantG + GLMdenoise+fracridge | **+0.217** | [+0.194, +0.239] | 28.8% |
+| VariantG + aCompCor | +0.212 | [+0.189, +0.234] | 25.9% |
+| RT_paper_replica_partial | +0.175 | [+0.151, +0.200] | 28.5% |
+| RT_paper_replica_full | NaN (repeat-avg) | — | — |
+| Offline_paper_replica_full | NaN (repeat-avg) | — | — |
+
+### Pre-registered hypothesis tests (paired bootstrap, n=2000)
+
+| H | Test | Δ | 95% CI | P(Δ≤0) | Verdict |
+|---|---|---|---|---|---|
+| **H1** | AR(1) freq > OLS | **+0.044** | [+0.023, +0.065] | 0.000 | ✓ |
+| H2 | VG (uninform) ≈ AR(1) freq | +0.0005 | [-0.0003, +0.0014] | 0.106 | not rejected |
+| H3 | VG (prior) > VG (uninform) | -0.0009 | [-0.0026, +0.0009] | 0.833 | not supported |
+| **H4** | AR(1)+denoise > AR(1) | **+0.022** | [+0.006, +0.037] | 0.004 | ✓ |
+| **H4b** | VG+denoise > VG | **+0.022** | [+0.006, +0.038] | 0.005 | ✓ |
+| **H4c** | VG+aCompCor > VG | **+0.017** | [+0.001, +0.032] | 0.021 | ✓ |
+
+H5 (Offline > RT) NaN here because reliability requires multiple repeats per image; cells 11/12 already collapsed repeats into 1 β each. H5 is the retrieval-side hypothesis (decoder-dependent) — not testable from β-reliability alone.
+
+### Mac↔DGX comparison protocol
+
+For each cell, expect the **β-reliability mean** to match Mac↔DGX within ~0.005 (numerical precision). For each H1-H5 verdict, the **direction and significance** should reproduce identically — these tests are deterministic given identical betas + identical bootstrap seed (paired_diff_ci uses `np.random.default_rng(0)` if I read the helper right; verify).
+
+A divergence > 0.01 in any per-cell rel mean would indicate the betas themselves diverged (jax-mps numerical drift on Mac vs CUDA on DGX). A divergence in verdict (e.g., H4 ✓ on one platform but — on the other) would be more concerning.
+
+### Files added in this update
+
+- `prereg_benchmark_summary.json` — full numerical output of `prereg_benchmark.py`
+- `prereg_benchmark_console.txt` — captured stdout for direct visual diff
+- `drivers/run_prereg_benchmark_local.py` — local-paths wrapper

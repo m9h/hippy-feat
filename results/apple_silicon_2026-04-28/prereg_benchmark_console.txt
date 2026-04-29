@@ -1,0 +1,34 @@
+/Users/mhough/Workspace/hippy-feat/scripts/benchmark_glm_variants.py:97: RuntimeWarning: Mean of empty slice
+  return float(np.nanmean(arr)), arr
+/Users/mhough/Workspace/hippy-feat/scripts/prereg_benchmark.py:89: RuntimeWarning: Mean of empty slice
+  f"[{rel_ci[1]:+.4f},{rel_ci[2]:+.4f}]  null≈{null.mean():+.4f}  "
+/Users/mhough/Workspace/hippy-feat/.venv-metal/lib/python3.13/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in divide
+  ret = ret.dtype.type(ret / rcount)
+/Users/mhough/Workspace/hippy-feat/scripts/benchmark_glm_variants.py:187: RuntimeWarning: Mean of empty slice
+  boot = np.array([diff[rng.integers(0, len(diff), len(diff))].mean()
+/Users/mhough/Workspace/hippy-feat/scripts/benchmark_glm_variants.py:190: RuntimeWarning: Mean of empty slice
+  "mean_diff": float(diff.mean()),
+=== Pre-registered β reliability across 11 cells ===
+
+  OLS_glover_rtm                                    rel=+0.1504 [+0.1168,+0.1828]  null≈+0.0014  id_hit=0.222  n_trials=770
+  AR1freq_glover_rtm                                rel=+0.1946 [+0.1695,+0.2186]  null≈+0.0006  id_hit=0.336  n_trials=770
+  VariantG_glover_rtm                               rel=+0.1952 [+0.1699,+0.2195]  null≈+0.0007  id_hit=0.330  n_trials=770
+  VariantG_glover_rtm_prior                         rel=+0.1943 [+0.1689,+0.2178]  null≈+0.0003  id_hit=0.336  n_trials=770
+  AR1freq_glmsingleS1_rtm                           rel=+0.1332 [+0.1134,+0.1533]  null≈-0.0004  id_hit=0.302  n_trials=770
+  AR1freq_glover_rtm_glmdenoise_fracridge           rel=+0.2165 [+0.1937,+0.2382]  null≈-0.0016  id_hit=0.291  n_trials=770
+  VariantG_glover_rtm_glmdenoise_fracridge          rel=+0.2168 [+0.1938,+0.2385]  null≈-0.0017  id_hit=0.288  n_trials=770
+  VariantG_glover_rtm_acompcor                      rel=+0.2118 [+0.1893,+0.2336]  null≈-0.0013  id_hit=0.259  n_trials=770
+  RT_paper_replica_partial                          rel=+0.1754 [+0.1509,+0.2000]  null≈+0.0018  id_hit=0.285  n_trials=770
+  RT_paper_replica_full                             rel=+nan [+nan,+nan]  null≈+nan  id_hit=nan  n_trials=532
+  Offline_paper_replica_full                        rel=+nan [+nan,+nan]  null≈+nan  id_hit=nan  n_trials=532
+
+=== H1–H5 pre-registered tests ===
+  H1: AR(1) freq > OLS                                        Δ=+0.0443 [+0.0228,+0.0652]  P(Δ≤0)=0.000  ✓
+  H2: VG (uninformative) ≈ AR(1) freq                         Δ=+0.0005 [-0.0003,+0.0014]  P(Δ≤0)=0.106  —
+  H3: VG (prior) > VG (uninformative)                         Δ=-0.0009 [-0.0026,+0.0009]  P(Δ≤0)=0.833  —
+  H4: AR(1) + GLMdenoise+fracridge > AR(1) freq alone         Δ=+0.0218 [+0.0062,+0.0373]  P(Δ≤0)=0.004  ✓
+  H4b: VG + GLMdenoise+fracridge > VG alone                   Δ=+0.0216 [+0.0055,+0.0375]  P(Δ≤0)=0.005  ✓
+  H4c: VG + tCompCor > VG alone                               Δ=+0.0166 [+0.0006,+0.0321]  P(Δ≤0)=0.021  ✓
+  H5: Offline replica > RT replica (paper-style: 76 % > 66 %)  Δ=+nan [+nan,+nan]  P(Δ≤0)=0.000  —
+
+Wrote /Users/mhough/Workspace/data/rtmindeye_paper/task_2_1_betas/prereg/prereg_benchmark_summary.json
