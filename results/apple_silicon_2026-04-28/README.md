@@ -149,3 +149,44 @@ A divergence > 0.01 in any per-cell rel mean would indicate the betas themselves
 - `prereg_benchmark_summary.json` — full numerical output of `prereg_benchmark.py`
 - `prereg_benchmark_console.txt` — captured stdout for direct visual diff
 - `drivers/run_prereg_benchmark_local.py` — local-paths wrapper
+
+---
+
+## Update 2026-04-28 (evening): cell 11 full-run-BOLD bug confirmed and fixed
+
+The user surfaced the actual cause of the cell-11 inflation we'd attributed to the checkpoint: `fit_lss_nilearn` was being called with the **entire 192-TR run** for every probe trial, giving offline-quality β regardless of which BOLD source (rtmotion vs fmriprep) was loaded. That's why cell 11 looked like another Offline run instead of paper's 66% RT.
+
+DGX agent's commit e462681 added a `streaming_decode_TR` parameter to `fit_lss_nilearn` and a `streaming_post_stim_TRs` arg to `run_cell` — but the CELLS dict at the bottom doesn't yet wire it on (queued for next session). I ran the wiring locally over `post_stim_TRs ∈ {4, 6, 8, 10}`.
+
+### Streaming sweep results (cell 11 with cropped causal BOLD)
+
+| post_stim_TRs | Top-1 | Top-5 | Δ vs Offline (76%) |
+|---|---|---|---|
+| 4 | 54% | 76% | -22pp (over-cropped, fits underdetermined for early trials) |
+| **6** | **64%** | 86% | **-12pp** |
+| **8** | **68%** | 82% | **-8pp** |
+| 10 | 68% | 88% | -8pp |
+| ∞ (the bug = full run) | 74% | 92% | -2pp ❌ |
+
+**Paper RT = 66%, Offline = 76% → 10pp gap.** With `post_stim_TRs ∈ [6, 8]`, our streaming-corrected cell 11 brackets the paper's RT exactly, and the recovered RT↔Offline gap (8-12pp) matches the paper's 10pp.
+
+### What this changes about Task 2.1's interpretation
+
+The decomposition `Δ_fmriprep + Δ_glmsingle ≈ Δ_total` is now actually testable: with corrected cell 11 (e.g. pst8 = 68%) as the RT anchor and cell 12 (76%) as the Offline anchor, the 8pp gap is real and can be attributed to fMRIPrep + GLMsingle contributions. Before this correction, our local "10pp gap" was wholly fictitious — both anchors were measuring offline quality.
+
+### What this implies for cells 1-10
+
+Cells 1-10 (the JAX-only and partial-replica cells) **all use full-run BOLD** — they are *all* measured "as if offline". Their relative orderings (e.g. AR(1) > OLS = +6pp) are still meaningful within that offline-quality regime, but they can't be compared apples-to-apples to streaming-cell-11 = 68% to claim "X cell beats paper RT". The right interpretation:
+- Cells 1-10 measure per-trial β quality with FULL-RUN BOLD — they answer "does GLM choice matter when motion-corrected BOLD is fixed and full data available?"
+- Streaming cell 11 (pst=6 or 8) measures the actual paper RT pipeline.
+- For each AR(1)/Variant G variant to be properly compared to paper RT, it would need to also be re-fit with `streaming_post_stim_TRs=8` cropping — that's a follow-up sweep.
+
+### Mac↔DGX comparison reframing
+
+DGX agent has the same `streaming_decode_TR` machinery in main as of e462681 but hasn't yet wired the CELLS dict to use it. Once both run pst=8 streaming on cell 11, expect **both** to land near paper's 66% (and both to confirm the 10pp gap). This is now the cleanest cross-platform validation.
+
+### Files added in this update
+
+- `drivers/run_cell_11_streaming_local.py` — single-pst run
+- `drivers/run_cell_11_streaming_sweep.py` — pst ∈ {6, 8, 10} sweep
+- `retrieval_results_v3_streaming_corrected.json` — full v2 + the streaming variants concatenated
