@@ -252,12 +252,36 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
 
 
 CELLS = {
+    # Cells 10-12 — original full-run-BOLD anchors (Regime A in
+    # TASK_2_1_AMENDMENT_2026-04-28.md). These mislabel as RT but actually
+    # fit LSS on the full run; kept for the windowing decomposition.
     "RT_paper_replica_partial":   dict(loader=load_rtmotion_4d,
-                                         do_repeat_avg=False),
+                                         do_repeat_avg=False,
+                                         streaming_post_stim_TRs=None),
     "RT_paper_replica_full":      dict(loader=load_rtmotion_4d,
-                                         do_repeat_avg=True),
+                                         do_repeat_avg=True,
+                                         streaming_post_stim_TRs=None),
     "Offline_paper_replica_full": dict(loader=load_fmriprep_4d,
-                                         do_repeat_avg=True),
+                                         do_repeat_avg=True,
+                                         streaming_post_stim_TRs=None),
+    # Regime B (within-run streaming) — the amendment's locked anchors.
+    # Each per-trial GLM fits on BOLD/events cropped to onset_TR+pst.
+    # pst=8 is the paper-RT replica per Mac's recovery of the 10pp gap.
+    "RT_paper_replica_streaming_pst4_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=4),
+    "RT_paper_replica_streaming_pst6_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=6),
+    "RT_paper_replica_streaming_pst8_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=8),
+    "RT_paper_replica_streaming_pst10_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=10),
+    "RT_paper_replica_streaming_pst8_full":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=True,
+             streaming_post_stim_TRs=8),
 }
 
 
@@ -280,6 +304,7 @@ def main():
             betas, trial_ids, config = run_cell(
                 cell, cfg["loader"], args.session, args.runs,
                 do_repeat_avg=cfg["do_repeat_avg"],
+                streaming_post_stim_TRs=cfg.get("streaming_post_stim_TRs"),
             )
             np.save(OUT_DIR / f"{cell}_{args.session}_betas.npy", betas)
             np.save(OUT_DIR / f"{cell}_{args.session}_trial_ids.npy",

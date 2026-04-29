@@ -69,6 +69,14 @@ CELLS = [
     "HybridOnline_AR1freq_glover_rtm",
     # Cell 20: log-signature features of tCompCor PCs as nuisance regressors
     "LogSig_AR1freq_glover_rtm",
+    # TASK_2_1_AMENDMENT_2026-04-28: locked Regime B (within-run streaming)
+    # cells. Per-trial GLM fit on BOLD/events cropped to onset_TR + pst.
+    # pst=8 with repeat-avg is the paper-RT canonical replica.
+    "RT_paper_replica_streaming_pst4_partial",
+    "RT_paper_replica_streaming_pst6_partial",
+    "RT_paper_replica_streaming_pst8_partial",
+    "RT_paper_replica_streaming_pst10_partial",
+    "RT_paper_replica_streaming_pst8_full",
 ]
 
 
@@ -120,9 +128,9 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     # (post-2026-04-28 fix to causal cumulative). Skip re-z to avoid
     # double-application — Mac's v2 retrieval eval handles cell 10 the
     # same way.
-    if cell in ("RT_paper_replica_partial",
-                "RT_paper_replica_full",
-                "Offline_paper_replica_full"):
+    # All cells driven by rt_paper_full_replica.py already cum-z'd inside
+    # `cumulative_zscore_with_optional_repeat_avg`; do not re-z-score here.
+    if cell.startswith("RT_paper_replica") or cell.startswith("Offline_paper_replica"):
         betas_z = betas_all
     else:
         betas_z = cumulative_zscore(betas_all)
