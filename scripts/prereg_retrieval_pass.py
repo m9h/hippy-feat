@@ -81,6 +81,11 @@ CELLS = [
     "RT_streaming_pst8_HOSVD_K5_partial",
     "RT_streaming_pst8_HOSVD_K10_partial",
     "RT_streaming_pst8_HOSVD_K5_full",
+    # H3'-corrected variants
+    "HybridOnline_streaming_pst8_AR1freq_glover_rtm",
+    "RT_streaming_pst8_ResidHOSVD_K5_partial",
+    "RT_streaming_pst8_ResidHOSVD_K10_partial",
+    "RT_streaming_pst8_ResidHOSVD_K5_full",
 ]
 
 

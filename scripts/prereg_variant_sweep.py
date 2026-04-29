@@ -360,11 +360,17 @@ def _fracridge_voxel(beta_ols_per_voxel: np.ndarray,
     return (coef @ Vh).astype(np.float32)
 
 
+def run_glm_cell_with_streaming(*args, streaming_post_stim_TRs: int | None = None, **kwargs):
+    """Wrapper that lets streaming_post_stim_TRs be threaded through CELLS."""
+    return run_glm_cell(*args, streaming_post_stim_TRs=streaming_post_stim_TRs, **kwargs)
+
+
 def run_glm_cell(cell_name: str, mode: str, bold_source: str,
                  hrf_strategy: str, session: str, runs: list[int],
                  prior_mean: np.ndarray | None = None,
                  prior_var: np.ndarray | None = None,
                  denoise: str | None = None,
+                 streaming_post_stim_TRs: int | None = None,
                  ) -> tuple[np.ndarray, list[str]]:
     """Run cells 1, 2, 4, 5, 6 — pure GLM (no denoising) variants."""
     flat_brain, rel = load_mask()
@@ -527,14 +533,23 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
             beta_noise = ts @ comps                       # (V, K)
             ts = (ts - beta_noise @ comps.T).astype(np.float32)
         for trial_i in range(len(onsets)):
+            # Streaming variant: crop BOLD/design to onset_TR + post_stim
+            if streaming_post_stim_TRs is not None:
+                onset_TR = int(round(float(onsets[trial_i]) / tr))
+                decode_TR = min(onset_TR + streaming_post_stim_TRs, n_trs - 1)
+                ts_use = ts[:, :decode_TR + 1]
+                n_trs_use = decode_TR + 1
+            else:
+                ts_use = ts
+                n_trs_use = n_trs
             if hrf_strategy == "glmsingle_lib":
                 beta = _glm_glmsingle_per_voxel_hrf(
-                    ts, onsets, trial_i, tr, n_trs,
+                    ts_use, onsets, trial_i, tr, n_trs_use,
                     hrf_indices, hrf_library, base_time, mode=mode,
                 )
             else:
                 beta, _ = _glm_jax(
-                    ts, onsets, trial_i, tr, n_trs, mode=mode,
+                    ts_use, onsets, trial_i, tr, n_trs_use, mode=mode,
                     prior_mean=prior_mean, prior_var=prior_var,
                 )
             # Optional fracridge per-voxel shrinkage (cell 7, 8)
@@ -604,6 +619,12 @@ CELLS = {
     "LogSig_AR1freq_glover_rtm":
         dict(mode="ar1_freq", bold_source="rtmotion", hrf_strategy="glover",
              denoise="logsig_tcompcor"),
+    # H3'-corrected: streaming pst=8 + session-ρ̂ frozen from full-session
+    # streaming AR(1) tracker. The architecturally clean Regime C noise
+    # model: per-trial β fit on cropped BOLD with frozen-from-past-runs ρ̂.
+    "HybridOnline_streaming_pst8_AR1freq_glover_rtm":
+        dict(mode="ar1_session_rho", bold_source="rtmotion",
+             hrf_strategy="glover", streaming_post_stim_TRs=8),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 
@@ -657,6 +678,7 @@ def main():
                 session=args.session, runs=args.runs,
                 prior_mean=prior_mean, prior_var=prior_var,
                 denoise=config.get("denoise"),
+                streaming_post_stim_TRs=config.get("streaming_post_stim_TRs"),
             )
             save_cell(cell, betas, trial_ids, args.session, config)
             print(f"  elapsed: {time.time() - t0:.1f}s")

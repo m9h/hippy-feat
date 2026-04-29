@@ -188,10 +188,43 @@ def cumulative_zscore_with_optional_repeat_avg(
     return np.stack(out_betas, axis=0), out_ids
 
 
+def _ols_residuals_for_past_run(bold_4d: nib.Nifti1Image,
+                                 events: pd.DataFrame,
+                                 flat_brain: np.ndarray, rel: np.ndarray,
+                                 tr: float) -> np.ndarray:
+    """Cheap per-voxel OLS GLM with all events as task regressors + drift +
+    intercept. Returns the masked residuals (V_brain, T_run) — pure noise
+    after subtracting the canonical-Glover task fit. Used to build a
+    task-orthogonal cross-run template."""
+    arr_4d = bold_4d.get_fdata().astype(np.float32)
+    X, Y, Z, T = arr_4d.shape
+    Y_masked = arr_4d.reshape(-1, T)[flat_brain][rel]              # (V_brain, T)
+    onsets_sec = events["onset"].astype(float).values - float(events["onset"].iloc[0])
+    n_hrf_trs = int(np.ceil(32.0 / tr))
+    from rt_glm_variants import make_glover_hrf
+    hrf = make_glover_hrf(tr, n_hrf_trs)
+    n_trials = len(onsets_sec)
+    Xd = np.zeros((T, n_trials + 2), dtype=np.float32)
+    for i, onset_sec in enumerate(onsets_sec):
+        onset_TR = int(round(onset_sec / tr))
+        probe = np.zeros(T, dtype=np.float32)
+        if 0 <= onset_TR < T:
+            probe[onset_TR] = 1.0
+        Xd[:, i] = np.convolve(probe, hrf)[:T]
+    Xd[:, -2] = np.cos(2 * np.pi * np.arange(T) / max(T - 1, 1))
+    Xd[:, -1] = 1.0
+    XtX_inv = np.linalg.inv(Xd.T @ Xd + 1e-4 * np.eye(Xd.shape[1])).astype(np.float32)
+    beta = XtX_inv @ Xd.T @ Y_masked.T                              # (P, V)
+    pred = Xd @ beta                                                # (T, V)
+    resid = Y_masked.T - pred                                       # (T, V)
+    return resid.astype(np.float32)
+
+
 def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
               do_repeat_avg: bool,
               streaming_post_stim_TRs: int | None = None,
               cross_run_K: int | None = None,
+              cross_run_residual_K: int | None = None,
               ) -> tuple[np.ndarray, list[str], dict]:
     """If `streaming_post_stim_TRs` is given, simulate paper RT pipeline:
     each trial's LSS GLM is fit on BOLD/events cropped to TR =
@@ -212,6 +245,7 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
               "do_repeat_avg": do_repeat_avg, "tr": tr,
               "streaming_post_stim_TRs": streaming_post_stim_TRs,
               "cross_run_K": cross_run_K,
+              "cross_run_residual_K": cross_run_residual_K,
               "nilearn_args": {
                   "hrf_model": "glover", "drift_model": "cosine",
                   "drift_order": 1, "high_pass": 0.01,
@@ -219,8 +253,10 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
               }}
 
     # When using cross-run template, accumulate past-run BOLD as (V, T_r)
-    # masked time series so that SVD is cheap.
+    # masked time series so that SVD is cheap. For the residual variant,
+    # store residuals (T_r, V_brain) instead.
     past_runs_masked: list[np.ndarray] = []
+    past_runs_residuals: list[np.ndarray] = []  # (T_r, V_brain) per past run
 
     for run_idx, run in enumerate(runs):
         try:
@@ -242,20 +278,38 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
             U, _, _ = np.linalg.svd(past_centered.astype(np.float64),
                                       full_matrices=False)
             template = U[:, :cross_run_K].astype(np.float32)        # (V_brain, K)
-            # Mask current run BOLD to brain space
             current_bold_4d = bold_4d.get_fdata().astype(np.float32)
-            X, Y, Z, T_r = current_bold_4d.shape
+            Xs, Ys, Zs, T_r = current_bold_4d.shape
             current_masked = current_bold_4d.reshape(-1, T_r)[flat_brain][rel]
             cross_run_confounds = (template.T @ current_masked).T   # (T_r, K)
-            print(f"  [{cell_name}] run-{run:02d} cross-run template built "
+            print(f"  [{cell_name}] run-{run:02d} cross-run RAW-BOLD template "
                   f"from {len(past_runs_masked)} past runs (V={template.shape[0]}, K={cross_run_K})")
+        elif cross_run_residual_K is not None and len(past_runs_residuals) > 0:
+            # Task-orthogonal: SVD of concatenated GLM residuals from past
+            # runs. Spatial PCs (right singular vectors) capture noise
+            # structure shared across sessions without the task subspace.
+            past_resid = np.concatenate(past_runs_residuals, axis=0)   # (T_past, V_brain)
+            past_centered = past_resid - past_resid.mean(axis=0, keepdims=True)
+            _, _, Vt = np.linalg.svd(past_centered.astype(np.float64),
+                                       full_matrices=False)
+            template = Vt[:cross_run_residual_K].T.astype(np.float32)   # (V_brain, K)
+            current_bold_4d = bold_4d.get_fdata().astype(np.float32)
+            Xs, Ys, Zs, T_r = current_bold_4d.shape
+            current_masked = current_bold_4d.reshape(-1, T_r)[flat_brain][rel]
+            cross_run_confounds = (template.T @ current_masked).T       # (T_r, K)
+            print(f"  [{cell_name}] run-{run:02d} cross-run RESIDUAL template "
+                  f"from {len(past_runs_residuals)} past runs (V={template.shape[0]}, K={cross_run_residual_K})")
 
-        # Stash this run's masked BOLD for future runs' templates
+        # Stash this run's data for future runs' templates
         if cross_run_K is not None:
             current_bold_for_stash = bold_4d.get_fdata().astype(np.float32)
-            X, Y, Z, T_r = current_bold_for_stash.shape
+            Xs, Ys, Zs, T_r = current_bold_for_stash.shape
             past_runs_masked.append(
                 current_bold_for_stash.reshape(-1, T_r)[flat_brain][rel]
+            )
+        if cross_run_residual_K is not None:
+            past_runs_residuals.append(
+                _ols_residuals_for_past_run(bold_4d, events, flat_brain, rel, tr)
             )
 
         # Combine motion + cross-run nuisance into a single confound table
@@ -348,6 +402,18 @@ CELLS = {
     "RT_streaming_pst8_HOSVD_K5_full":
         dict(loader=load_rtmotion_4d, do_repeat_avg=True,
              streaming_post_stim_TRs=8, cross_run_K=5),
+    # H3'-corrected: task-residual HOSVD. Past-run BOLD has the GLM task
+    # fit subtracted before SVD, so spatial PCs span session-shared noise
+    # only — projecting them out shouldn't remove decode signal.
+    "RT_streaming_pst8_ResidHOSVD_K5_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=8, cross_run_residual_K=5),
+    "RT_streaming_pst8_ResidHOSVD_K10_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=8, cross_run_residual_K=10),
+    "RT_streaming_pst8_ResidHOSVD_K5_full":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=True,
+             streaming_post_stim_TRs=8, cross_run_residual_K=5),
 }
 
 
@@ -372,6 +438,7 @@ def main():
                 do_repeat_avg=cfg["do_repeat_avg"],
                 streaming_post_stim_TRs=cfg.get("streaming_post_stim_TRs"),
                 cross_run_K=cfg.get("cross_run_K"),
+                cross_run_residual_K=cfg.get("cross_run_residual_K"),
             )
             np.save(OUT_DIR / f"{cell}_{args.session}_betas.npy", betas)
             np.save(OUT_DIR / f"{cell}_{args.session}_trial_ids.npy",
