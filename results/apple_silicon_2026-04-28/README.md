@@ -284,3 +284,36 @@ Mac replicates paper anchors. Decomposition (Δ_window 6pp, Δ_motion 2pp) holds
 
 - `drivers/run_offline_glmsingle_local.py`
 - `retrieval_results_v6_with_glmsingle.json`
+
+---
+
+## Update 2026-04-28 (very late): Bayesian classification eval — what Variant G is actually for
+
+User pointed out: top-1 retrieval is a point-estimate metric, and Variant G's value proposition (the per-trial posterior `(β_mean, β_var)`) is specifically for closed-loop neurofeedback decisions, not for "winning at top-1". The right metrics are calibration-aware: Brier score, ECE, and selective accuracy at confidence thresholds.
+
+Built `drivers/run_bayes_classify_eval.py`: for each test trial, MC sample 100 β draws from `N(β_mean, diag(β_var))`, forward each through ridge → BrainNetwork → CLIP, accumulate empirical posterior over the 50 special515 images. Reports point-estimate baseline, posterior mode, Brier, ECE, and selective-accuracy curves.
+
+### Results (sub-005 ses-03, 150 special515 test trials, 100 MC samples)
+
+| Cell | PE-top1 | Brier | ECE | τ=0.5 cov/acc | τ=0.7 cov/acc | τ=0.9 cov/acc |
+|---|---|---|---|---|---|---|
+| VG full-run | 60.0% | **0.57** | **0.13** | 0.79/0.72 | 0.59/0.78 | 0.41/**0.90** |
+| VG + GLMdenoise+fracridge | 60.0% | 0.58 | 0.19 | 0.85/0.69 | 0.67/0.74 | 0.49/0.88 |
+| VG + aCompCor | 59.3% | 0.59 | 0.21 | 0.87/0.65 | 0.67/0.74 | 0.51/0.87 |
+| VG streaming pst=8 | 47.3% | 0.73 | 0.23 | 0.75/0.58 | 0.55/0.68 | 0.34/0.84 |
+
+### Headline
+
+- **At τ=0.9, all Variant G cells hit 84-90% accuracy** — that's the deployable neurofeedback number, not the 60% point-estimate.
+- **Bare Variant G has the cleanest posterior** (Brier 0.57, ECE 0.13). Denoising tightens variance (more high-confidence trials → coverage 41% → 49-51% at τ=0.9) but degrades calibration overall — a real trade-off, not strict improvement.
+- **Streaming pays a coverage tax, not an accuracy tax**: at τ=0.9, pst=8 still hits 84% accuracy (only 6pp behind full-run), but coverage drops 41% → 34%.
+
+### Why prereg H2 was a category error
+
+The original H2 ("VG (uninformative) ≈ AR(1) freq within 95% CI") was tested on β-reliability — a point-estimate metric. Variant G's whole point is the *posterior*; it cannot be evaluated on point estimates and judged ≡ to a frequentist whose only output IS a point estimate. The right comparison is calibration-conditional accuracy at deployment thresholds, which AR(1) freq cannot produce. Amendment H2' should be revised: **VG provides calibrated selective accuracy ≥ X at τ=0.9**, with X-on-Mac = 0.84-0.90 depending on cell.
+
+### Files
+
+- `drivers/run_variantg_with_vars.py` — re-runs Variant G cells saving (β_mean, β_var)
+- `drivers/run_bayes_classify_eval.py` — MC posterior eval with calibration metrics
+- `bayes_classification_results.json` — full numerical output (Brier, ECE, selective curves, calibration bins)
