@@ -78,21 +78,46 @@ def load_mc_params(session: str, run: int) -> np.ndarray | None:
 
 def fit_lss_nilearn(bold_4d: nib.Nifti1Image, events: pd.DataFrame,
                      probe_trial: int, mc_params: np.ndarray | None,
-                     tr: float = 1.5, mask_img: nib.Nifti1Image | None = None
-                     ) -> np.ndarray:
-    """One LSS fit using nilearn — replicates mindeye.py:745."""
+                     tr: float = 1.5, mask_img: nib.Nifti1Image | None = None,
+                     streaming_decode_TR: int | None = None,
+                     ) -> np.ndarray | None:
+    """One LSS fit using nilearn — replicates mindeye.py:745.
+
+    If `streaming_decode_TR` is given, crop BOLD to volumes [0..decode_TR]
+    and events to `events.onset <= decode_TR * tr` BEFORE fitting. This
+    matches Rishab's notebook cell 19: at every non-blank TR the GLM is
+    refit on the BOLD-and-events accumulated up to that TR. Cumulative
+    motion params are also cropped if provided. Returns None if the probe
+    trial isn't yet visible at the cropped window.
+    """
     from nilearn.glm.first_level import FirstLevelModel
 
-    cropped = events.copy()
-    cropped["onset"] = cropped["onset"].astype(float) - cropped["onset"].iloc[0]
-    cropped["trial_type"] = np.where(
-        np.arange(len(cropped)) == probe_trial, "probe", "reference"
-    )
-    cropped["duration"] = 1.0  # avoid nilearn's null-duration warning
+    base = events.copy()
+    base["onset"] = base["onset"].astype(float) - base["onset"].iloc[0]
 
-    confounds = (pd.DataFrame(mc_params,
-                              columns=[f"mc_{i}" for i in range(mc_params.shape[1])])
-                 if mc_params is not None else None)
+    if streaming_decode_TR is not None:
+        decode_sec = streaming_decode_TR * tr
+        base = base[base["onset"] <= decode_sec].reset_index(drop=True)
+        if probe_trial >= len(base):
+            return None
+        bold_arr = bold_4d.get_fdata()[..., :streaming_decode_TR + 1]
+        bold_used = nib.Nifti1Image(bold_arr, bold_4d.affine)
+        if mc_params is not None:
+            mc_used = mc_params[:streaming_decode_TR + 1]
+        else:
+            mc_used = None
+    else:
+        bold_used = bold_4d
+        mc_used = mc_params
+
+    base["trial_type"] = np.where(
+        np.arange(len(base)) == probe_trial, "probe", "reference"
+    )
+    base["duration"] = 1.0  # avoid nilearn's null-duration warning
+
+    confounds = (pd.DataFrame(mc_used,
+                              columns=[f"mc_{i}" for i in range(mc_used.shape[1])])
+                 if mc_used is not None else None)
 
     glm = FirstLevelModel(
         t_r=tr, slice_time_ref=0,
@@ -104,7 +129,7 @@ def fit_lss_nilearn(bold_4d: nib.Nifti1Image, events: pd.DataFrame,
         memory_level=0, minimize_memory=True,
         mask_img=mask_img if mask_img is not None else False,
     )
-    glm.fit(run_imgs=bold_4d, events=cropped, confounds=confounds)
+    glm.fit(run_imgs=bold_used, events=base, confounds=confounds)
     eff = glm.compute_contrast("probe", output_type="effect_size")
     return eff.get_fdata()                                 # (X, Y, Z) volume
 
@@ -164,7 +189,12 @@ def cumulative_zscore_with_optional_repeat_avg(
 
 
 def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
-              do_repeat_avg: bool) -> tuple[np.ndarray, list[str], dict]:
+              do_repeat_avg: bool,
+              streaming_post_stim_TRs: int | None = None,
+              ) -> tuple[np.ndarray, list[str], dict]:
+    """If `streaming_post_stim_TRs` is given, simulate paper RT pipeline:
+    each trial's LSS GLM is fit on BOLD/events cropped to TR =
+    onset_TR + post_stim. Otherwise fit on the full run (offline LSS)."""
     flat_brain, rel = load_brain_paper_mask()
     tr = 1.5
     mask_img = nib.load(BRAIN_MASK)
@@ -173,6 +203,7 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
     image_history: list[str] = []
     config = {"cell": cell_name, "session": session, "runs": runs,
               "do_repeat_avg": do_repeat_avg, "tr": tr,
+              "streaming_post_stim_TRs": streaming_post_stim_TRs,
               "nilearn_args": {
                   "hrf_model": "glover", "drift_model": "cosine",
                   "drift_order": 1, "high_pass": 0.01,
@@ -188,16 +219,30 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
         events_path = EVENTS_DIR / f"sub-005_{session}_task-C_run-{run:02d}_events.tsv"
         events = pd.read_csv(events_path, sep="\t")
         mc_params = load_mc_params(session, run)
+        n_trs_run = bold_4d.shape[3] if hasattr(bold_4d, "shape") else None
         for trial_i in range(len(events)):
             t0 = time.time()
+            decode_TR = None
+            if streaming_post_stim_TRs is not None:
+                onset_sec = float(events.iloc[trial_i]["onset"]) - float(events.iloc[0]["onset"])
+                onset_TR = int(round(onset_sec / tr))
+                decode_TR = onset_TR + streaming_post_stim_TRs
+                if n_trs_run is not None:
+                    decode_TR = min(decode_TR, n_trs_run - 1)
             beta_vol = fit_lss_nilearn(bold_4d, events, trial_i, mc_params,
-                                        tr=tr, mask_img=mask_img)
+                                        tr=tr, mask_img=mask_img,
+                                        streaming_decode_TR=decode_TR)
+            if beta_vol is None:
+                print(f"  {cell_name} run-{run:02d} trial {trial_i:3d} "
+                      f"SKIP (decode_TR not yet reached)")
+                continue
             beta_masked = beta_vol.flatten()[flat_brain][rel]
             beta_history.append(beta_masked.astype(np.float32))
             image_history.append(str(events.iloc[trial_i].get("image_name",
                                                                 str(trial_i))))
+            tag = f"streaming(decode_TR={decode_TR})" if decode_TR is not None else "full-run"
             print(f"  {cell_name} run-{run:02d} trial {trial_i:3d} "
-                  f"({time.time() - t0:.2f}s)")
+                  f"{tag} ({time.time() - t0:.2f}s)")
 
     betas, trial_ids = cumulative_zscore_with_optional_repeat_avg(
         beta_history, image_history, do_repeat_avg=do_repeat_avg,

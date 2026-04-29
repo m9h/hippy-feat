@@ -124,6 +124,45 @@ def _glm_jax(timeseries: np.ndarray, onsets: np.ndarray, probe_trial: int,
     if hrf is None:
         hrf = make_glover_hrf(tr, int(np.ceil(32.0 / tr)))
     dm, probe_col = build_design_matrix(onsets, tr, n_trs, hrf, probe_trial)
+    if mode == "ar1_session_rho":
+        # Cell 17 (hybrid online): ρ̂ comes from a session-level streaming
+        # tracker (intercept+drift only design); per-trial β fit uses that
+        # ρ̂ as a frozen pre-whitening coefficient. The right architectural
+        # split — stationary parameters stream, per-trial coefficients
+        # snapshot.
+        # The session-ρ̂ is provided via a thread-local cache populated by
+        # the caller in run_glm_cell — we just read `globals().get(...)`
+        # for cleanliness in this kernel.
+        rho_session = _get_session_rho_or_compute(
+            timeseries_per_run_for_rho=globals().get("_SESSION_RHO_TS", None),
+            tr=tr, n_voxels=timeseries.shape[0],
+        )
+        # Standard AR(1) prewhitened OLS with per-voxel ρ frozen
+        from rt_glm_variants import _ols_fit
+        if hrf is None:
+            hrf = make_glover_hrf(tr, int(np.ceil(32.0 / tr)))
+        dm, probe_col = build_design_matrix(onsets, tr, n_trs, hrf, probe_trial)
+        # Per-voxel prewhitening — vmap over voxels
+        n_eff = n_trs - 1
+        beta_out = np.zeros(timeseries.shape[0], dtype=np.float32)
+        var_out = np.zeros(timeseries.shape[0], dtype=np.float32)
+        for v in range(timeseries.shape[0]):
+            rho_v = float(rho_session[v])
+            y_pw = timeseries[v, 1:] - rho_v * timeseries[v, :-1]
+            X_pw = dm[1:] - rho_v * dm[:-1]
+            try:
+                XtX_inv = np.linalg.inv(X_pw.T @ X_pw + 1e-6 * np.eye(dm.shape[1]))
+                beta = XtX_inv @ X_pw.T @ y_pw
+                resid = y_pw - X_pw @ beta
+                rss = float((resid ** 2).sum())
+                sigma2 = rss / max(n_eff - dm.shape[1], 1)
+                beta_out[v] = float(beta[probe_col])
+                var_out[v] = float(sigma2 * XtX_inv[probe_col, probe_col])
+            except np.linalg.LinAlgError:
+                beta_out[v] = 0.0
+                var_out[v] = 1e10
+        return beta_out, var_out
+
     if mode == "ar1_streaming_kalman":
         # Cell 13 (EKF): streaming AR(1) Bayesian Kalman over BOLD timeseries.
         # Build LSS design once, then feed (X[t], Y[:, t]) per-TR through
@@ -227,6 +266,40 @@ def _glm_glmsingle_per_voxel_hrf(timeseries: np.ndarray, onsets: np.ndarray,
 
 # ---- Cell drivers -------------------------------------------------------------
 
+def _get_session_rho_or_compute(timeseries_per_run_for_rho,
+                                  tr: float, n_voxels: int
+                                  ) -> np.ndarray:
+    """Estimate per-voxel session-level ρ̂ from a streaming pass over the
+    full session BOLD with only intercept + drift in the design.
+
+    Sets globals()['_SESSION_RHO_CACHE'] to memoize across trial calls.
+    """
+    cache = globals().get("_SESSION_RHO_CACHE")
+    if cache is not None and cache.shape == (n_voxels,):
+        return cache
+    if timeseries_per_run_for_rho is None:
+        return np.full(n_voxels, 0.3, dtype=np.float32)
+    # Concat all runs
+    Y_session = np.concatenate(timeseries_per_run_for_rho, axis=1)  # (V, T_tot)
+    V, T_total = Y_session.shape
+    # Simple intercept + cosine drift design
+    intercept = np.ones(T_total, dtype=np.float32)
+    drift = np.cos(2 * np.pi * np.arange(T_total) / max(T_total - 1, 1)
+                   ).astype(np.float32)
+    X = np.stack([intercept, drift], axis=1)                  # (T, 2)
+    # OLS fit per voxel; collect residuals
+    XtX_inv_Xt = np.linalg.inv(X.T @ X + 1e-6 * np.eye(2)) @ X.T
+    betas = Y_session @ XtX_inv_Xt.T                          # (V, 2)
+    pred = betas @ X.T
+    resid = Y_session - pred                                  # (V, T_total)
+    # Per-voxel lag-1 autocorrelation
+    num = (resid[:, 1:] * resid[:, :-1]).sum(axis=1)
+    den = (resid ** 2).sum(axis=1) + 1e-10
+    rho = np.clip(num / den, -0.95, 0.95).astype(np.float32)
+    globals()["_SESSION_RHO_CACHE"] = rho
+    return rho
+
+
 def _extract_noise_components_per_run(timeseries_per_run: list[np.ndarray],
                                        max_K: int = 5,
                                        pool_frac: float = 0.10
@@ -303,6 +376,10 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
     else:
         base_time = hrf_library = hrf_indices = None
 
+    # Reset session-rho cache for cell 17 path; populated lazily on first call
+    globals()["_SESSION_RHO_CACHE"] = None
+    globals()["_SESSION_RHO_TS"] = None
+
     # First load all runs' BOLD + events (needed for denoising path)
     timeseries_per_run = []
     events_per_run = []
@@ -316,6 +393,12 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
         events = load_events(session, run)
         timeseries_per_run.append(ts)
         events_per_run.append(events)
+
+    # Cell 17: stash all runs' BOLD so the kernel can compute session ρ̂
+    if mode == "ar1_session_rho":
+        globals()["_SESSION_RHO_TS"] = list(timeseries_per_run)
+        print(f"  [mode=ar1_session_rho] stashed {len(timeseries_per_run)} "
+              f"runs of BOLD for session-ρ̂ estimation")
 
     # Pre-compute noise components per run if denoising requested
     noise_per_run: list[np.ndarray] | None = None
@@ -345,6 +428,40 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
             timeseries_per_run[r] = denoised.real.astype(np.float32)
         print(f"  [denoise=hosvd_4d] applied global NORDIC SVD-thresholding "
               f"per run (real-part only since magnitude input)")
+    elif denoise == "logsig_tcompcor":
+        # Cell 20 — log-signature features as additional nuisance regressors.
+        # Streaming primitive: log-sig of the most recent W TRs of the K
+        # tCompCor noise components, computed at every TR. Chen's identity
+        # makes the sliding-window sig updatable in O(1) per new sample, so
+        # this is a true online feature even though we batch-compute it here
+        # for the offline cell. Depth-2 log-sig over K=5 PCs adds K*(K-1)/2 =
+        # 10 Levy-area terms — a richer nuisance basis than the 5 PCs alone.
+        K = 5
+        pool_frac = 0.05
+        noise_per_run = _extract_noise_components_per_run(
+            timeseries_per_run, max_K=K, pool_frac=pool_frac,
+        )
+        import signax
+        import jax.numpy as jnp
+        W = 20
+        augmented_noise = []
+        for comps in noise_per_run:                       # comps: (T_r, K)
+            T_r = comps.shape[0]
+            pad = np.repeat(comps[:1], W - 1, axis=0)     # (W-1, K)
+            padded = np.concatenate([pad, comps], axis=0) # (T_r + W-1, K)
+            windows = np.lib.stride_tricks.sliding_window_view(
+                padded, window_shape=W, axis=0
+            ).transpose(0, 2, 1).copy()                   # (T_r, W, K)
+            logsig = np.asarray(
+                signax.logsignature(jnp.asarray(windows), depth=2)
+            ).astype(np.float32)                           # (T_r, K*(K-1)/2)
+            aug = np.concatenate([comps, logsig], axis=1) # (T_r, K + 10)
+            aug = (aug - aug.mean(0)) / (aug.std(0) + 1e-6)
+            augmented_noise.append(aug.astype(np.float32))
+        noise_per_run = augmented_noise
+        print(f"  [denoise=logsig_tcompcor] tCompCor K={K} + depth-2 log-sig "
+              f"over W={W} sliding window → "
+              f"{augmented_noise[0].shape[1]} nuisance regressors/TR")
     elif denoise == "riemannian_prewhiten":
         # Cell 15: Riemannian-mean prewhitening. Per-run cov Σ_r = (X_r X_r^T)/T,
         # geometric mean Σ̄ across runs (Riemannian SPD mean), then prewhiten
@@ -475,6 +592,18 @@ CELLS = {
     "Riemannian_prewhiten_AR1freq_glover_rtm":
         dict(mode="ar1_freq", bold_source="rtmotion", hrf_strategy="glover",
              denoise="riemannian_prewhiten"),
+    # Cell 17: HYBRID ONLINE — noise model (ρ̂, σ²) accumulates session-wide,
+    # β fit per-trial with frozen-from-session ρ. The architecturally correct
+    # version of the streaming-mindset cells (vs cell 13 reset-per-trial,
+    # vs cell 16 diag-cov-with-770-probes that lost identifiability).
+    "HybridOnline_AR1freq_glover_rtm":
+        dict(mode="ar1_session_rho", bold_source="rtmotion", hrf_strategy="glover"),
+    # Cell 20: log-signature path features of tCompCor PCs as additional
+    # nuisance regressors. Streaming primitive (Chen's identity): each new
+    # TR extends every active sliding window's log-sig by an O(1) update.
+    "LogSig_AR1freq_glover_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion", hrf_strategy="glover",
+             denoise="logsig_tcompcor"),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 

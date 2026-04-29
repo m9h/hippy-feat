@@ -64,6 +64,11 @@ CELLS = [
     "Riemannian_prewhiten_AR1freq_glover_rtm",
     # Cell 16: TRULY online EKF — state accumulates across all 2112 TRs
     "EKF_session_online_glover_rtm",
+    # Cell 17: noise model accumulates session-wide; β fit per-trial with
+    # frozen-from-session ρ̂. The architecturally correct streaming hybrid.
+    "HybridOnline_AR1freq_glover_rtm",
+    # Cell 20: log-signature features of tCompCor PCs as nuisance regressors
+    "LogSig_AR1freq_glover_rtm",
 ]
 
 
@@ -110,7 +115,14 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     # Cells 11 & 12 already have the cumulative z-score baked in inside
     # rt_paper_full_replica.py's `cumulative_zscore_with_optional_repeat_avg`.
     # All other cells need it applied here. Match Apple-Silicon v2 logic.
-    if cell in ("RT_paper_replica_full", "Offline_paper_replica_full"):
+    # Cells 10-12 already have the cumulative z-score baked in inside
+    # rt_paper_full_replica.py's `cumulative_zscore_with_optional_repeat_avg`
+    # (post-2026-04-28 fix to causal cumulative). Skip re-z to avoid
+    # double-application — Mac's v2 retrieval eval handles cell 10 the
+    # same way.
+    if cell in ("RT_paper_replica_partial",
+                "RT_paper_replica_full",
+                "Offline_paper_replica_full"):
         betas_z = betas_all
     else:
         betas_z = cumulative_zscore(betas_all)
