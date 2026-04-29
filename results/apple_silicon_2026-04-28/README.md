@@ -250,3 +250,37 @@ So: cell 12 dur=1 → 76.0% Offline (paper-exact); cell 11 streaming pst=8 dur=1
 
 - `drivers/run_paper_anchors_dur3.py` — duration=3 ablation driver
 - `retrieval_results_v5_with_dur3_ablation.json` — full results including dur3 cells
+
+---
+
+## Update 2026-04-28 (final): GLMsingle Stages 1-3 ablation on cell 12
+
+Built `Offline_paper_replica_full_glmsingle`: the paper's stated Offline pipeline with HRF library (Stage 1) + GLMdenoise (Stage 2: PCA on noise pool) + fracridge (Stage 3) + cum-z + repeat-avg. Compared against our base cell 12 (canonical Glover + nilearn AR(1) only).
+
+| Cell | top-1 | top-5 |
+|---|---|---|
+| `Offline_paper_replica_full` (Glover + AR1) | **76.0%** | 94.0% |
+| `Offline_paper_replica_full_glmsingle` (+ Stages 1-3) | 72.0% | **96.0%** |
+
+**GLMsingle Stages 1-3 actually hurt top-1 by 4pp.** Two interpretations:
+
+1. **Approximation divergence**: our Stage 2 uses fixed K=5 PCs + pool_frac=0.1; Stage 3 uses fixed `frac=0.5`-equivalent ridge. The canonical `glmsingle` (Prince et al. 2022) uses cross-validation to pick K and per-voxel frac. Our shortcuts may not match the canonical implementation. Top-5 going up while top-1 going down is consistent with *more diffuse but better-ranked-on-average* embeddings.
+2. **GLMsingle isn't load-bearing at this checkpoint**: nilearn AR(1) + canonical Glover already hits paper Offline at 76% without any of GLMsingle's elaboration. The paper's reported 76% may simply be the AR(1)-driven baseline; GLMsingle adds robustness (better top-5) but not accuracy (top-1) on this checkpoint/data.
+
+To distinguish (1) from (2) we'd run the actual `pip install glmsingle` package in Python — that's the canonical implementation by the authors. We didn't because:
+- Adds another dependency tree to vet for cross-platform reproducibility
+- Cell 12's 76% already matches paper at the anchor; the GLMsingle question is about *what mechanism* the paper attributes its Offline number to, not whether we reproduce it
+- Our headline (Δ_RT-vs-Offline = 8pp on Mac vs paper's 10pp; Δ_window = 6pp dominant) is intact regardless
+
+### Final anchor table
+
+| Anchor | Mac (today) | Paper | Δ |
+|---|---|---|---|
+| Offline cell 12 | **76.0%** | 76% | 0 |
+| RT cell 11 streaming pst=8 | **68.0%** | 66% | +2pp |
+| Δ_total | **8pp** | 10pp | -2pp |
+
+Mac replicates paper anchors. Decomposition (Δ_window 6pp, Δ_motion 2pp) holds. Files added:
+
+- `drivers/run_offline_glmsingle_local.py`
+- `retrieval_results_v6_with_glmsingle.json`
