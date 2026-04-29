@@ -47,6 +47,7 @@ dev = [
     "pytest>=7.0",
     "hypothesis>=6.0",
     "pytest-cov>=4.0",
+    "scikit-learn",
 ]
 doc = [
     "sphinx>=7.0",

@@ -109,10 +109,10 @@ def build_lss_design_matrix(events_onsets: np.ndarray, tr: float, n_trs: int,
 
 @partial(jax.jit, static_argnames=())
 def _variant_g_forward_jit(X_pad, Y_pad, n_eff,
-                           pp_scalar=jnp.float32(0.01),
-                           rho_prior_mean=jnp.float32(0.5),
-                           rho_prior_var=jnp.float32(0.09),
-                           a0=jnp.float32(0.01), b0=jnp.float32(0.01)):
+                           pp_scalar=0.01,
+                           rho_prior_mean=0.5,
+                           rho_prior_var=0.09,
+                           a0=0.01, b0=0.01):
     """AR(1)-prewhitened conjugate Gaussian GLM, padded inputs, vmapped voxels.
 
     Args:

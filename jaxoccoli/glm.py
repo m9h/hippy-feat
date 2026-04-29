@@ -51,8 +51,9 @@ class GeneralLinearModel:
         # Precompute (X'X)^-1 X' for OLS
         # We use Cholesky for stability and speed on positive definite X'X
         self.XtX = self.X.T @ self.X
-        # Add a small jitter for numerical stability if needed, but usually redundant if well designed
-        self.XtX_inv = jnp.linalg.inv(self.XtX) 
+        # Use Cholesky-based inversion for stability and speed
+        from .matrix import cholesky_invert
+        self.XtX_inv = cholesky_invert(self.XtX + 1e-6 * jnp.eye(self.XtX.shape[0])) 
         self.pinv = self.XtX_inv @ self.X.T
 
     @partial(jax.jit, static_argnums=(0,))
