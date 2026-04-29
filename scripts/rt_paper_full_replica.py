@@ -114,19 +114,36 @@ def cumulative_zscore_with_optional_repeat_avg(
         image_history: list[str],
         do_repeat_avg: bool,
         ) -> tuple[np.ndarray, list[str]]:
-    """Apply the paper's cumulative running z-score (and optional repeat-
-    averaging) to the accumulated trial-betas at the END of all runs.
+    """Apply the paper's CAUSAL cumulative running z-score (and optional
+    repeat-averaging) to the accumulated trial-betas.
 
-    Replicates mindeye.py:770-784.
+    Replicates mindeye.py:770-784. Each trial i is z-scored using the
+    statistics of trials 0..i-1 ONLY — strict causality, no test-set
+    leakage.
+
+    Earlier (buggy) version used `arr.mean(axis=0)` over ALL trials
+    including future ones. Apple-Silicon side caught this: their v2
+    retrieval eval moved cell 12 from 80% (leaky) to 76% (paper-exact).
+    DGX cell 11 inflation by 8pp vs Mac was the same leak.
 
     Returns the post-processed (n_trials, V) beta matrix and the
     image label per (post-processed) trial — which may be shorter than
     the input if repeat_avg collapses repeats.
     """
     arr = np.stack(beta_history, axis=0).astype(np.float32)   # (n, V)
-    z_mean = arr.mean(axis=0, keepdims=True)
-    z_std = arr.std(axis=0, keepdims=True) + 1e-6
-    z = (arr - z_mean) / z_std
+    n, V = arr.shape
+    z = np.zeros_like(arr)
+    for i in range(n):
+        if i < 2:
+            # Too few past trials to z-score; just center on whatever's there
+            if i == 0:
+                z[i] = arr[i]                                # no past stats
+            else:
+                z[i] = arr[i] - arr[0]                       # center on first
+        else:
+            mu = arr[:i].mean(axis=0)
+            sd = arr[:i].std(axis=0) + 1e-6
+            z[i] = (arr[i] - mu) / sd
 
     if not do_repeat_avg:
         return z, list(image_history)

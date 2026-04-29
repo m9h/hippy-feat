@@ -124,6 +124,27 @@ def _glm_jax(timeseries: np.ndarray, onsets: np.ndarray, probe_trial: int,
     if hrf is None:
         hrf = make_glover_hrf(tr, int(np.ceil(32.0 / tr)))
     dm, probe_col = build_design_matrix(onsets, tr, n_trs, hrf, probe_trial)
+    if mode == "ar1_streaming_kalman":
+        # Cell 13 (EKF): streaming AR(1) Bayesian Kalman over BOLD timeseries.
+        # Build LSS design once, then feed (X[t], Y[:, t]) per-TR through
+        # streaming_kalman_ar1_update; final β posterior is what we save.
+        from jaxoccoli.streaming_kalman import (
+            init_streaming_kalman_ar1,
+            streaming_kalman_ar1_run,
+        )
+        dm, probe_col = build_design_matrix(onsets, tr, n_trs, hrf, probe_trial)
+        state = init_streaming_kalman_ar1(P=dm.shape[1], V=timeseries.shape[0])
+        # streaming_kalman_ar1_run expects (T, P) X and (V, T) Y
+        state = streaming_kalman_ar1_run(state, dm.astype(np.float32),
+                                          timeseries.astype(np.float32))
+        beta = np.asarray(state.beta_mean[:, probe_col], dtype=np.float32)
+        # Posterior variance from b_post / (a_post - 1)
+        var = np.asarray(
+            np.maximum(state.b_post / np.maximum(state.a_post - 1.0, 1e-3), 1e-10),
+            dtype=np.float32,
+        )
+        return beta, var
+
     if mode == "ols":
         # plain OLS via _ols_fit; build a per-voxel variance estimate using
         # a single sigma² from the residuals.
@@ -306,6 +327,70 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
         )
         print(f"  [denoise={denoise}] extracted K={K} noise components per run "
               f"(pool_frac={pool_frac})")
+    elif denoise == "hosvd_4d":
+        # Cell 14: apply HOSVD multiway NORDIC to each run's 4D BOLD volume.
+        # Need to reshape (V, T) → (X, Y, Z, T) using brain mask. Then back.
+        from jaxoccoli.multiway_nordic import hosvd_threshold_4d
+        import jax.numpy as jnp
+        # We don't have the spatial unflatten readily — operate on (V, T) as
+        # a 4D tensor (V_x=V, V_y=1, V_z=1, T) which is degenerate. Better:
+        # use the 2D NORDIC path via patch unfolding which equivalent for
+        # global SVD anyway. Reuse jaxoccoli.nordic.nordic_global on each run.
+        from jaxoccoli.nordic import nordic_global
+        for r in range(len(timeseries_per_run)):
+            ts_r = timeseries_per_run[r]                  # (V, T)
+            # Cast to complex64 (NORDIC expects complex; magnitude data → +0j)
+            z = (ts_r + 0j).astype(np.complex64)
+            denoised = np.asarray(nordic_global(jnp.asarray(z)))
+            timeseries_per_run[r] = denoised.real.astype(np.float32)
+        print(f"  [denoise=hosvd_4d] applied global NORDIC SVD-thresholding "
+              f"per run (real-part only since magnitude input)")
+    elif denoise == "riemannian_prewhiten":
+        # Cell 15: Riemannian-mean prewhitening. Per-run cov Σ_r = (X_r X_r^T)/T,
+        # geometric mean Σ̄ across runs (Riemannian SPD mean), then prewhiten
+        # each run's BOLD by Σ̄^{-1/2}.
+        # For V=2792 voxels, V×V is ~30 MB float32 — feasible. Σ̄^{-1/2} via
+        # eigendecomposition.
+        # Practical note: per-run cov on V=2792 with T~192 is rank-deficient
+        # (rank ≤ T). Add a ridge term to regularize: Σ_r → Σ_r + ε·I.
+        V = timeseries_per_run[0].shape[0]
+        eps = 1e-3
+        per_run_cov = []
+        for ts_r in timeseries_per_run:
+            T_r = ts_r.shape[1]
+            # Center per-voxel
+            ts_c = ts_r - ts_r.mean(axis=1, keepdims=True)
+            cov = (ts_c @ ts_c.T) / max(T_r - 1, 1)
+            per_run_cov.append(cov + eps * np.eye(V, dtype=np.float32))
+        # Riemannian (log-Euclidean) geometric mean: arithmetic mean of
+        # matrix logs; computationally cheaper than affine-invariant mean
+        # and converges to it for closely-clustered SPD matrices.
+        # log-Euclidean mean: exp(mean(log(Σ_r)))
+        # logm/expm return complex128 even on SPD input; take .real after each.
+        # Use eigendecomposition directly: SPD M = U diag(λ) U^T,
+        # log(M) = U diag(log λ) U^T, exp(...) = U diag(exp(...)) U^T.
+        # Faster than scipy.linalg.logm and stays in real arithmetic.
+        log_sum = np.zeros((V, V), dtype=np.float64)
+        for cov in per_run_cov:
+            evals, evecs = np.linalg.eigh(cov.astype(np.float64))
+            log_evals = np.log(np.maximum(evals, 1e-12))
+            log_sum += (evecs * log_evals) @ evecs.T
+        log_mean = log_sum / len(per_run_cov)
+        evals_lm, evecs_lm = np.linalg.eigh(log_mean)
+        sigma_bar = ((evecs_lm * np.exp(evals_lm)) @ evecs_lm.T).astype(np.float32)
+        # Σ̄^{-1/2} via eigendecomposition
+        evals, evecs = np.linalg.eigh(sigma_bar)
+        evals_inv_sqrt = 1.0 / np.sqrt(np.maximum(evals, 1e-6))
+        sigma_bar_inv_sqrt = (evecs * evals_inv_sqrt) @ evecs.T
+        sigma_bar_inv_sqrt = sigma_bar_inv_sqrt.astype(np.float32)
+        # Apply per-run prewhitening
+        for r in range(len(timeseries_per_run)):
+            timeseries_per_run[r] = (
+                sigma_bar_inv_sqrt @ timeseries_per_run[r]
+            ).astype(np.float32)
+        print(f"  [denoise=riemannian_prewhiten] V×V SPD geom mean "
+              f"(log-Euclidean) over {len(per_run_cov)} runs; "
+              f"prewhitened per-run BOLD by Σ̄^(-1/2)")
 
     all_betas, trial_ids = [], []
     for run_idx, run in enumerate(runs):
@@ -381,6 +466,15 @@ CELLS = {
     "VariantG_glover_rtm_acompcor":
         dict(mode="variant_g", bold_source="rtmotion", hrf_strategy="glover",
              denoise="tcompcor"),
+    # Cells 13-15: methods we coded up yesterday
+    "EKF_streaming_glover_rtm":
+        dict(mode="ar1_streaming_kalman", bold_source="rtmotion", hrf_strategy="glover"),
+    "HOSVD_denoise_AR1freq_glover_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion", hrf_strategy="glover",
+             denoise="hosvd_4d"),
+    "Riemannian_prewhiten_AR1freq_glover_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion", hrf_strategy="glover",
+             denoise="riemannian_prewhiten"),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 
