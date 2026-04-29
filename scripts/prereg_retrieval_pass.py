@@ -77,6 +77,10 @@ CELLS = [
     "RT_paper_replica_streaming_pst8_partial",
     "RT_paper_replica_streaming_pst10_partial",
     "RT_paper_replica_streaming_pst8_full",
+    # Regime C — cross-run HOSVD template confound (H3' deliverable)
+    "RT_streaming_pst8_HOSVD_K5_partial",
+    "RT_streaming_pst8_HOSVD_K10_partial",
+    "RT_streaming_pst8_HOSVD_K5_full",
 ]
 
 
@@ -130,7 +134,9 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     # same way.
     # All cells driven by rt_paper_full_replica.py already cum-z'd inside
     # `cumulative_zscore_with_optional_repeat_avg`; do not re-z-score here.
-    if cell.startswith("RT_paper_replica") or cell.startswith("Offline_paper_replica"):
+    if (cell.startswith("RT_paper_replica") or
+            cell.startswith("Offline_paper_replica") or
+            cell.startswith("RT_streaming_pst")):
         betas_z = betas_all
     else:
         betas_z = cumulative_zscore(betas_all)

@@ -191,10 +191,17 @@ def cumulative_zscore_with_optional_repeat_avg(
 def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
               do_repeat_avg: bool,
               streaming_post_stim_TRs: int | None = None,
+              cross_run_K: int | None = None,
               ) -> tuple[np.ndarray, list[str], dict]:
     """If `streaming_post_stim_TRs` is given, simulate paper RT pipeline:
     each trial's LSS GLM is fit on BOLD/events cropped to TR =
-    onset_TR + post_stim. Otherwise fit on the full run (offline LSS)."""
+    onset_TR + post_stim. Otherwise fit on the full run (offline LSS).
+
+    If `cross_run_K` is given, build a Regime C cross-run HOSVD template:
+    for run r, take the top-K spatial PCs of concat(past runs 1..r-1)
+    BOLD, project current run's BOLD onto them, and append the resulting
+    K time series as additional nuisance regressors. Strictly causal —
+    each run uses only earlier runs' data."""
     flat_brain, rel = load_brain_paper_mask()
     tr = 1.5
     mask_img = nib.load(BRAIN_MASK)
@@ -204,13 +211,18 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
     config = {"cell": cell_name, "session": session, "runs": runs,
               "do_repeat_avg": do_repeat_avg, "tr": tr,
               "streaming_post_stim_TRs": streaming_post_stim_TRs,
+              "cross_run_K": cross_run_K,
               "nilearn_args": {
                   "hrf_model": "glover", "drift_model": "cosine",
                   "drift_order": 1, "high_pass": 0.01,
                   "noise_model": "ar1", "signal_scaling": False,
               }}
 
-    for run in runs:
+    # When using cross-run template, accumulate past-run BOLD as (V, T_r)
+    # masked time series so that SVD is cheap.
+    past_runs_masked: list[np.ndarray] = []
+
+    for run_idx, run in enumerate(runs):
         try:
             bold_4d = bold_loader(session, run)
         except FileNotFoundError as e:
@@ -220,6 +232,48 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
         events = pd.read_csv(events_path, sep="\t")
         mc_params = load_mc_params(session, run)
         n_trs_run = bold_4d.shape[3] if hasattr(bold_4d, "shape") else None
+
+        # Compute Regime C cross-run nuisance for this run before the
+        # trial loop. Strictly causal: only past runs feed the template.
+        cross_run_confounds = None
+        if cross_run_K is not None and len(past_runs_masked) > 0:
+            past_concat = np.concatenate(past_runs_masked, axis=1)  # (V_brain, T_past)
+            past_centered = past_concat - past_concat.mean(axis=1, keepdims=True)
+            U, _, _ = np.linalg.svd(past_centered.astype(np.float64),
+                                      full_matrices=False)
+            template = U[:, :cross_run_K].astype(np.float32)        # (V_brain, K)
+            # Mask current run BOLD to brain space
+            current_bold_4d = bold_4d.get_fdata().astype(np.float32)
+            X, Y, Z, T_r = current_bold_4d.shape
+            current_masked = current_bold_4d.reshape(-1, T_r)[flat_brain][rel]
+            cross_run_confounds = (template.T @ current_masked).T   # (T_r, K)
+            print(f"  [{cell_name}] run-{run:02d} cross-run template built "
+                  f"from {len(past_runs_masked)} past runs (V={template.shape[0]}, K={cross_run_K})")
+
+        # Stash this run's masked BOLD for future runs' templates
+        if cross_run_K is not None:
+            current_bold_for_stash = bold_4d.get_fdata().astype(np.float32)
+            X, Y, Z, T_r = current_bold_for_stash.shape
+            past_runs_masked.append(
+                current_bold_for_stash.reshape(-1, T_r)[flat_brain][rel]
+            )
+
+        # Combine motion + cross-run nuisance into a single confound table
+        if cross_run_confounds is not None:
+            if mc_params is not None:
+                # Align T dimension (mc may be one row per TR; cross-run is T_r rows)
+                T_mc = mc_params.shape[0]
+                T_cr = cross_run_confounds.shape[0]
+                T_use = min(T_mc, T_cr)
+                combined = np.concatenate(
+                    [mc_params[:T_use], cross_run_confounds[:T_use]], axis=1
+                )
+            else:
+                combined = cross_run_confounds
+            confounds_for_fit = combined
+        else:
+            confounds_for_fit = mc_params
+
         for trial_i in range(len(events)):
             t0 = time.time()
             decode_TR = None
@@ -229,7 +283,7 @@ def run_cell(cell_name: str, bold_loader, session: str, runs: list[int],
                 decode_TR = onset_TR + streaming_post_stim_TRs
                 if n_trs_run is not None:
                     decode_TR = min(decode_TR, n_trs_run - 1)
-            beta_vol = fit_lss_nilearn(bold_4d, events, trial_i, mc_params,
+            beta_vol = fit_lss_nilearn(bold_4d, events, trial_i, confounds_for_fit,
                                         tr=tr, mask_img=mask_img,
                                         streaming_decode_TR=decode_TR)
             if beta_vol is None:
@@ -282,6 +336,18 @@ CELLS = {
     "RT_paper_replica_streaming_pst8_full":
         dict(loader=load_rtmotion_4d, do_repeat_avg=True,
              streaming_post_stim_TRs=8),
+    # Regime C — cross-run HOSVD template confound (TASK_2_1_AMENDMENT
+    # H3'). Each run's GLM gets K cross-run nuisance regressors built
+    # causally from concatenated past runs' BOLD. The actual deliverable.
+    "RT_streaming_pst8_HOSVD_K5_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=8, cross_run_K=5),
+    "RT_streaming_pst8_HOSVD_K10_partial":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=False,
+             streaming_post_stim_TRs=8, cross_run_K=10),
+    "RT_streaming_pst8_HOSVD_K5_full":
+        dict(loader=load_rtmotion_4d, do_repeat_avg=True,
+             streaming_post_stim_TRs=8, cross_run_K=5),
 }
 
 
@@ -305,6 +371,7 @@ def main():
                 cell, cfg["loader"], args.session, args.runs,
                 do_repeat_avg=cfg["do_repeat_avg"],
                 streaming_post_stim_TRs=cfg.get("streaming_post_stim_TRs"),
+                cross_run_K=cfg.get("cross_run_K"),
             )
             np.save(OUT_DIR / f"{cell}_{args.session}_betas.npy", betas)
             np.save(OUT_DIR / f"{cell}_{args.session}_trial_ids.npy",
