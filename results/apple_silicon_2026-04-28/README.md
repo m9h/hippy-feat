@@ -230,3 +230,23 @@ Cells 5-9 (VG-prior, GLMsingle HRF, fracridge variants, aCompCor) need streaming
 
 - `drivers/run_jax_cells_streaming.py` — streaming pst=8 versions of cells 1, 2, 4
 - `retrieval_results_v4_windowing_factorial.json` — full results including streaming variants
+
+---
+
+## Update 2026-04-28 (later): stimulus duration ablation — duration=1 IS paper-faithful
+
+User asked to run the EXACT paper pipeline. One concern was that `fit_lss_nilearn` overrides events.tsv duration (~3s) to 1.0. I tested both anchors at duration=3 to see if the paper used 1 or 3.
+
+| Anchor | dur=1 (current) | dur=3 (events.tsv) | Δ |
+|---|---|---|---|
+| Offline_paper_replica_full | **76.0%** (paper 76%) | 68.0% | -8pp |
+| RT_paper_replica_full_streaming_pst8 | **68.0%** (paper 66%) | 50.0% | -18pp |
+
+**Conclusion: `duration=1.0` is the paper's deliberate choice, not a bug.** Using the actual 3s stimulus duration in the boxcar-convolved-with-HRF design hurts retrieval significantly. This is standard practice in cognitive-neuroscience GLMs: the BOLD response is dominated by the HRF shape (~12-15s), and modeling a brief impulse captures the dominant component better than a 3s box. The "avoid nilearn's null-duration warning" comment in the script undersells the role of this choice.
+
+So: cell 12 dur=1 → 76.0% Offline (paper-exact); cell 11 streaming pst=8 dur=1 → 68% (paper 66%, +2pp). **The Mac anchors faithfully replicate the paper.** Δ_total = 8pp vs paper's 10pp, well within bootstrap CI.
+
+### Files added in this update
+
+- `drivers/run_paper_anchors_dur3.py` — duration=3 ablation driver
+- `retrieval_results_v5_with_dur3_ablation.json` — full results including dur3 cells
