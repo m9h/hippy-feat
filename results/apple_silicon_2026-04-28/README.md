@@ -190,3 +190,43 @@ DGX agent has the same `streaming_decode_TR` machinery in main as of e462681 but
 - `drivers/run_cell_11_streaming_local.py` — single-pst run
 - `drivers/run_cell_11_streaming_sweep.py` — pst ∈ {6, 8, 10} sweep
 - `retrieval_results_v3_streaming_corrected.json` — full v2 + the streaming variants concatenated
+
+---
+
+## Update 2026-04-28 (late evening): the windowing factorial — Task 2's actual answer
+
+User reframed the goal: Task 2 isn't "fmriprep contribution + GLMsingle contribution"; it's *what's behind the difference between offline (whole session) and rt (segment)*. The dominant factor is the BOLD windowing itself — and our cells 1-10 weren't testing it because they all silently used full-run BOLD.
+
+Added a streaming wrapper for JAX cells (cells 1, 2, 4 = OLS / AR1freq / VariantG) at the same `post_stim_TRs=8` window cell-11-streaming used. See `drivers/run_jax_cells_streaming.py`.
+
+### Windowing factorial table
+
+| Cell | Full-run top-1 | Streaming pst=8 top-1 | **Δ_window** |
+|---|---|---|---|
+| OLS_glover_rtm | 56.7% | 42.7% | **-14pp** |
+| AR1freq_glover_rtm | 62.7% | 51.3% | **-11pp** |
+| VariantG_glover_rtm | 60.0% | 47.3% | **-13pp** |
+| RT_paper_replica_full (nilearn AR1 + MC + cosine + HPF) | 74.0% | 68.0% | **-6pp** |
+| Offline_paper_replica_full (cell 12, fmriprep, full run) | 76.0% | — | — |
+
+### Decomposition at pst=8
+
+- **Δ_window** = -11 to -14pp (bare GLMs) or -6pp (full nilearn pipeline)
+- **Δ_GLM at streaming** = AR1freq (51%) − OLS (43%) = +8pp lift from AR(1) prewhitening under RT conditions
+- **Δ_motion (Offline − RT)** = cell 12 (76%) − cell 11 streaming (68%) = 8pp
+- **Δ_total** = Offline (76%) − bare-GLM streaming (43-51%) = 25-33pp
+
+### Headline
+
+Of the ~25pp total Offline-vs-bare-RT gap on this checkpoint:
+1. **windowing accounts for 11-14pp**
+2. **nilearn confounds + HPF + cosine drift recover 5-8pp** (cell 11's smaller Δ_window vs the bare GLMs)
+3. **fmriprep motion accounts for 8pp** (cell 12 − cell 11 at streaming)
+4. **GLM choice (AR(1) over OLS) recovers 8pp** at streaming
+
+Cells 5-9 (VG-prior, GLMsingle HRF, fracridge variants, aCompCor) need streaming versions too for the complete picture; pst=8 is one point on Rishab's separate post-stim-duration axis (which is its own task).
+
+### Files added in this update
+
+- `drivers/run_jax_cells_streaming.py` — streaming pst=8 versions of cells 1, 2, 4
+- `retrieval_results_v4_windowing_factorial.json` — full results including streaming variants
