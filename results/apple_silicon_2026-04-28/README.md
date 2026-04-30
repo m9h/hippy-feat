@@ -317,3 +317,56 @@ The original H2 ("VG (uninformative) ≈ AR(1) freq within 95% CI") was tested o
 - `drivers/run_variantg_with_vars.py` — re-runs Variant G cells saving (β_mean, β_var)
 - `drivers/run_bayes_classify_eval.py` — MC posterior eval with calibration metrics
 - `bayes_classification_results.json` — full numerical output (Brier, ECE, selective curves, calibration bins)
+
+---
+
+## Update 2026-04-29: H3' tested on Mac — cross-run HOSVD FAILS to recover windowing gap
+
+DGX agent built Regime C HOSVD cells in commit `7a4690f` (3 cells: K5/K10 partial, K5 full) plus task-residual variants in `3e63344`. Ran all 6 locally on Mac for cross-platform pre-confirmation of H3'.
+
+### H3' verdict table
+
+| Cell | Trials | Top-1 | Top-5 | Δ vs streaming pst=8 baseline (68%) |
+|---|---|---|---|---|
+| `RT_paper_replica_full_streaming_pst8` (Regime B baseline) | 50 | 68.0% | 82.0% | — |
+| `RT_streaming_pst8_HOSVD_K5_partial` | 150 | 36.0% | 60.7% | (different denom) |
+| `RT_streaming_pst8_HOSVD_K10_partial` | 150 | 34.0% | 58.0% | — |
+| `RT_streaming_pst8_HOSVD_K5_full` | 50 | 42.0% | 70.0% | **-26pp** |
+| `RT_streaming_pst8_ResidHOSVD_K5_partial` | 150 | 32.0% | 63.3% | — |
+| `RT_streaming_pst8_ResidHOSVD_K10_partial` | 150 | 30.0% | 60.7% | — |
+| `RT_streaming_pst8_ResidHOSVD_K5_full` | 50 | 50.0% | 80.0% | **-18pp** |
+
+**H3' fails by a wide margin.** Even the task-residual variant — which subtracts the GLM fit before SVD specifically to keep task signal — drops retrieval by 18pp at top-1. The spatial PCs computed from past runs' BOLD are accidentally task-correlated; projecting them out removes wanted signal.
+
+### Implication
+
+The Δ_window penalty is **GLM-noise-floor intrinsic**, not session-shared structure removable by simple cross-run filtering. The 8pp Offline-vs-RT gap on this checkpoint cannot be closed causally. The findings-doc anticipated this:
+
+> If H3' fails: the windowing gap is GLM-noise-floor (per-trial AR(1) ρ̂ noisy when only ~10 TRs of BOLD are available) and the only ways to close it further are non-causal (repeat-avg across all session BOLD, batch-mode AR(1) ρ̂ across full session). That's an honest negative deliverable — RT can't get closer.
+
+**Honest answer to Discord**: real-time retrieval has a hard ceiling near 68% on this checkpoint at the 50-image task. Closing the remaining 8pp toward Offline (76%) requires non-causal information: either (a) wait until end of session to recompute with full BOLD, or (b) accept the hard ceiling. Stacking cross-run BOLD as a denoising filter does not help here.
+
+H3' could still hold for *different* cross-run mechanisms — e.g., reading the past-run AR(1) ρ̂ as a prior on the current trial's GLM, or using past-run β estimates of the same image (when present) as a Bayesian prior. Cell 17 (`HybridOnline_AR1freq_glover_rtm` from the DGX `3e63344` commit) tests the first; not yet run.
+
+## Update 2026-04-29: original-deck variants from team presentation
+
+Three variants from the original 8-variant deck (`presentation/rt_mindeye_pipeline.tex`) were never wired into the prereg sweep but had Variant classes in `scripts/rt_glm_variants.py`. Ran them locally on rtmotion BOLD, full-run, with default-fit weights:
+
+| Cell | Top-1 | vs OLS baseline (56.7%) | Notes |
+|---|---|---|---|
+| `VariantB_FLOBS_glover_rtm` | 6.0% | collapses | default 1/3 voxel weights — needs per-voxel weight fit from training data |
+| `VariantE_Spatial_glover_rtm` (Laplacian, λ=0.1) | 54.7% | -2.0pp | spatial smoothing flat in fine 2792-voxel finalmask |
+| `VariantCD_Combined_glover_rtm` (per-vox HRF + Bayesian) | 50.0% | -6.7pp | rescues C alone (44.7%) by +5.3pp via Bayesian shrinkage; still below AR(1) |
+
+**Takeaways**:
+- B without per-voxel weights = averaging 3 FLOBS bases ≈ delta-onset HRF; expect to improve substantially with proper voxel-wise weight fit (training step not yet run).
+- E adds no signal; spatial smoothing is the wrong axis when the brain mask is already aggressively reliability-thresholded.
+- C+D shows the per-voxel HRF library failure mode is partially recoverable with shrinkage, but even with shrinkage, AR(1) on canonical Glover wins. Reinforces H5' (GLMsingle Stages 1-3 not load-bearing).
+
+A+N (CSF/WM nuisance regression) was not run because PVE files are at T1 resolution (176×256×256) and BOLD is at downsampled space (76×90×74); requires resample step. Deferred.
+
+## Files added in this update
+
+- `drivers/run_regime_c_local.py` — runs all 6 Regime C HOSVD cells
+- `drivers/run_deck_variants.py` — runs B, E, C+D using existing Variant classes
+- `retrieval_results_v7_regimeC_plus_deck.json` — concatenated retrieval JSON
