@@ -554,3 +554,36 @@ For closed-loop neurofeedback the win is **GLMdenoise K=10 alone**. The original
 - `drivers/run_cv_fix_plus_soft.py` — F-ratio CV fracridge fix + soft-scalar isolation cell
 - `drivers/run_AUC_on_factorial.py` — pairwise AUC scorer for all factorial cells
 - `AUC_factorial_results.json` — full per-cell AUC + Cohen's d JSON
+
+---
+
+## Update 2026-04-29 (overnight): within-run LDS smoother — wrong state-space for AUC
+
+Built the within-run LDS option #1 from the state-space discussion: per-voxel univariate Kalman smoother on the per-trial β sequence within each run, with AR(1) dynamics fit empirically per voxel.
+
+### LDS results
+
+| Cell | AUC | Cohen's d | vs no-LDS baseline |
+|---|---|---|---|
+| OLS_LDS_glover_rtm | 0.564 | 0.243 | -0.048 vs OLS (0.612) |
+| OLS_denoiseK10_LDS_glover_rtm | 0.820 | 1.246 | -0.048 vs K=10 (0.868) |
+| AR1freq_LDS_glover_rtm | 0.687 | 0.677 | -0.014 vs AR1freq (0.701) |
+| AR1freq_denoiseK10_LDS_glover_rtm | 0.854 | 1.418 | -0.017 vs cell 7 (0.871) |
+
+### Why it fails for AUC
+
+Estimated per-voxel AR(1) coefficient `a̅ ≈ 0.5-0.6` (OLS) or `0.25-0.30` (AR1freq + K=10). Strong cross-trial correlation in the β sequence — but that correlation is dominated by **shared nuisance** (slow baseline drift, attentional drift), not by within-image signal.
+
+The Kalman smoother pulls each trial's β toward its temporal neighbors. Since neighboring trials almost always show DIFFERENT images (only ~3 of 70 trials per run are the same image given the special515 + filler structure), this homogenizes the trials and destroys same-image-vs-different-image discriminability — exactly what AUC measures.
+
+### Implication
+
+This is the wrong state-space formulation for retrieval/AUC targets. The correct architectures (untested) are:
+1. **State = nuisance, observation = β**: smoother captures slow drift & residual structure; per-trial β fit conditional on smoothed-out nuisance, not smoothed itself
+2. **Image-conditioned dynamics**: transition matrix depends on which image is shown — βs accumulate WITHIN same-image trials, reset across different-image trials. (This is SameImagePrior in state-space form.)
+
+The LDS-on-β approach is fine for capturing nuisance-correlated variance but wrong for tasks where the per-trial signal IS the discriminability.
+
+### Files added in this update
+
+- `drivers/run_lds_within_run.py` — 4-cell LDS factorial (OLS/AR(1) × K=0/K=10)
