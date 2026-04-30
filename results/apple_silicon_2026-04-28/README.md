@@ -395,3 +395,47 @@ Three distinct mechanisms attempted to close the 8pp Offline-vs-RT gap causally:
 
 - `drivers/run_three_followups.py` — runs cell 17 + same-image prior + FLOBS-fitted
 - `retrieval_results_v8_three_followups.json` — full retrieval JSON
+
+---
+
+## Update 2026-04-29 (deep evening): NUTS prior + merge/separate posterior
+
+Two analyses A and B run in parallel to address neurofeedback-specific Variant G performance.
+
+### A — NUTS-distilled hierarchical prior (`VariantG_NUTSprior_glover_rtm`)
+
+Hierarchical Bayesian model fit via blackjax NUTS on ses-01 G_fmriprep training betas (770 trials × 2792 voxels), then posterior moments (μ_v mean, μ_v var) used as Variant G prior on ses-03. **Result: 62.0% top-1 — identical to plain empirical-prior cell 5.**
+
+Why it tied: shrinkage ratio = 0.95 (only 5% pulled toward population mean). With 770 ses-01 trials per voxel, the empirical mean is already tight; NUTS hierarchical pooling barely tightens it further. NUTS would help in low-data regimes (single-shot, new subject) but is redundant when training set is dense.
+
+NUTS itself ran on MPS (jax-mps backend): warmup 163.1s (JIT compile-heavy on first NUTS step), sampling 75ms/step thereafter, 0/1000 divergent. blackjax is GPU-compatible on this stack.
+
+### B — Pairwise merge/separate posterior (`merge_separate_results.json`)
+
+For each pair of special515 trials (i,j), MC-sample β posterior 100×, compute cosine distance per sample → posterior distribution over distance. Reports Cohen's d between same-image and diff-image pair distributions (= effect-size discriminability), pair-classification AUC, and selective-feedback metrics.
+
+| Cell | AUC | Cohen's d | same-image d̄ | diff-image d̄ |
+|---|---|---|---|---|
+| VG bare | 0.681 | 0.557 | 0.767 | 0.856 |
+| **VG + GLMdenoise+fracridge** | **0.832** | **1.494** | 0.816 | 0.949 |
+| VG + aCompCor | 0.815 | 1.414 | 0.818 | 0.949 |
+| VG streaming pst=8 | 0.710 | 0.358 | 0.780 | 0.837 |
+
+**Headline**: for the actual closed-loop neurofeedback target (merge/separate signal), **denoising is load-bearing** — Cohen's d nearly tripled with GLMdenoise+fracridge (0.56 → 1.49). This contradicts the H4 retrieval reading (where denoising looked flat) and re-validates H4 in the right metric. The merge/separate AUC of 0.83 with denoising means same-image-pair vs different-image-pair distance distributions are clearly separable — participants can be given quantified-confidence feedback.
+
+### Synthesis: three different metrics, three different best paths
+
+| Metric | Best variant | Notes |
+|---|---|---|
+| Top-1 retrieval (50-way) | AR(1) freq alone (62.7%) | Priors don't help; data per trial is bottleneck |
+| **Merge/separate AUC (neurofeedback target)** | **VG + GLMdenoise+fracridge (0.83)** | Denoising matters; posterior shape is what's used |
+| Selective accuracy at τ=0.9 (gated retrieval) | All VG cells (84-90%) | High-confidence gate is deployment-ready |
+
+The deck/Discord story: **the right Variant G evaluation depends on the deployment task**. Top-1 retrieval undersells VG; merge/separate posterior overstates one specific pipeline (denoised VG); the selective-accuracy frame is the most decision-theoretically grounded.
+
+### Files
+
+- `drivers/run_A_nuts_distilled_prior.py` — blackjax NUTS hierarchical prior fit
+- `drivers/run_B_merge_separate_posterior.py` — MC pairwise distance posterior
+- `merge_separate_results.json` — B output (per-cell AUC, Cohen's d, selective curves)
+- `retrieval_results_v9_NUTS_plus_mergesep.json` — full retrieval JSON including A's cell

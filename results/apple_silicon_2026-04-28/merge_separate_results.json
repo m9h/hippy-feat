@@ -1,0 +1,182 @@
+[
+  {
+    "cell": "VariantG_glover_rtm_with_vars",
+    "n_test_trials": 150,
+    "n_pairs": 11175,
+    "n_same_image_pairs": 150,
+    "n_diff_image_pairs": 11025,
+    "same_image_d_mean": 0.7673539159695307,
+    "same_image_d_uncertainty_mean": 0.020712838464727004,
+    "diff_image_d_mean": 0.8556364232126007,
+    "diff_image_d_uncertainty_mean": 0.020903122760608895,
+    "cohens_d": 0.5570190596619561,
+    "pair_classification_AUC": 0.6810733333333333,
+    "selective_feedback": {
+      "std_le_0.0": {
+        "coverage": 1.0,
+        "auc": 0.6455066666666667,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.05": {
+        "coverage": 1.0,
+        "auc": 0.6455066666666667,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.1": {
+        "coverage": 1.0,
+        "auc": 0.6455066666666667,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.15": {
+        "coverage": 1.0,
+        "auc": 0.6455066666666667,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.2": {
+        "coverage": 1.0,
+        "auc": 0.6455066666666667,
+        "n_same": 150,
+        "n_diff": 11025
+      }
+    }
+  },
+  {
+    "cell": "VariantG_glover_rtm_glmdenoise_fracridge_with_vars",
+    "n_test_trials": 150,
+    "n_pairs": 11175,
+    "n_same_image_pairs": 150,
+    "n_diff_image_pairs": 11025,
+    "same_image_d_mean": 0.815622783501943,
+    "same_image_d_uncertainty_mean": 0.018983551772932213,
+    "diff_image_d_mean": 0.9485646777953151,
+    "diff_image_d_uncertainty_mean": 0.019145365711597223,
+    "cohens_d": 1.494398894496717,
+    "pair_classification_AUC": 0.83188,
+    "selective_feedback": {
+      "std_le_0.0": {
+        "coverage": 1.0,
+        "auc": 0.80948,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.05": {
+        "coverage": 1.0,
+        "auc": 0.80948,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.1": {
+        "coverage": 1.0,
+        "auc": 0.80948,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.15": {
+        "coverage": 1.0,
+        "auc": 0.80948,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.2": {
+        "coverage": 1.0,
+        "auc": 0.80948,
+        "n_same": 150,
+        "n_diff": 11025
+      }
+    }
+  },
+  {
+    "cell": "VariantG_glover_rtm_acompcor_with_vars",
+    "n_test_trials": 150,
+    "n_pairs": 11175,
+    "n_same_image_pairs": 150,
+    "n_diff_image_pairs": 11025,
+    "same_image_d_mean": 0.817812074025472,
+    "same_image_d_uncertainty_mean": 0.018938188975056013,
+    "diff_image_d_mean": 0.9489465970517286,
+    "diff_image_d_uncertainty_mean": 0.01908146408054969,
+    "cohens_d": 1.414460408692704,
+    "pair_classification_AUC": 0.8151933333333333,
+    "selective_feedback": {
+      "std_le_0.0": {
+        "coverage": 1.0,
+        "auc": 0.7887866666666666,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.05": {
+        "coverage": 1.0,
+        "auc": 0.7887866666666666,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.1": {
+        "coverage": 1.0,
+        "auc": 0.7887866666666666,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.15": {
+        "coverage": 1.0,
+        "auc": 0.7887866666666666,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.2": {
+        "coverage": 1.0,
+        "auc": 0.7887866666666666,
+        "n_same": 150,
+        "n_diff": 11025
+      }
+    }
+  },
+  {
+    "cell": "VariantG_glover_rtm_streaming_pst8_with_vars",
+    "n_test_trials": 150,
+    "n_pairs": 11175,
+    "n_same_image_pairs": 150,
+    "n_diff_image_pairs": 11025,
+    "same_image_d_mean": 0.7804094622532527,
+    "same_image_d_uncertainty_mean": 0.019435401670634747,
+    "diff_image_d_mean": 0.8369234921656499,
+    "diff_image_d_uncertainty_mean": 0.019504380432082143,
+    "cohens_d": 0.35755149625872207,
+    "pair_classification_AUC": 0.7103,
+    "selective_feedback": {
+      "std_le_0.0": {
+        "coverage": 1.0,
+        "auc": 0.68472,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.05": {
+        "coverage": 1.0,
+        "auc": 0.68472,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.1": {
+        "coverage": 1.0,
+        "auc": 0.68472,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.15": {
+        "coverage": 1.0,
+        "auc": 0.68472,
+        "n_same": 150,
+        "n_diff": 11025
+      },
+      "std_le_0.2": {
+        "coverage": 1.0,
+        "auc": 0.68472,
+        "n_same": 150,
+        "n_diff": 11025
+      }
+    }
+  }
+]
