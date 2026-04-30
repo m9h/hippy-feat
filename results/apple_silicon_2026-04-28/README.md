@@ -783,3 +783,42 @@ So **the right delay model is "single-TR boxcar at onset_TR convolved with Glove
 ### Files
 
 - `drivers/run_delay_model_sweep.py` — 4-cell duration sweep
+
+---
+
+## Update 2026-04-30 (closing-final): Persistent GLM (Ernest Lo's terminology)
+
+User pointed out we need to match Ernest's "persistent GLM" framing. Built two flavors of LSA (Least Squares All — single GLM per-fit, vs LSS per-trial-refit):
+1. Per-run persistent LSA: one GLM per run with all 70 trial regressors fit jointly
+2. Cross-run persistent LSA: single GLM across all 770 trials of ses-03 (with block-diagonal per-run intercept+drift)
+
+### Persistent GLM results
+
+| Cell | AUC | Cohen's d | vs LSS baseline |
+|---|---|---|---|
+| OLS LSS (baseline) | 0.612 | 0.410 | — |
+| **OLS persistent LSA per-run** | **0.699** | 0.704 | **+0.087** |
+| OLS persistent LSA cross-run (block-diag nuisance) | 0.697 | 0.699 | +0.085 |
+| OLS LSS + GLMdenoise K=10 | **0.868** | **1.529** | +0.256 (overall winner) |
+| OLS persistent LSA per-run + K=10 | 0.843 | 1.326 | -0.025 vs LSS+K10 |
+| OLS persistent LSA cross-run + K=10 | 0.844 | 1.344 | -0.024 vs LSS+K10 |
+
+### Findings
+
+1. **Persistent LSA gives +0.087 AUC over plain LSS** at the no-denoise baseline. Joint-fit reduces per-β variance via shared design info. Bigger than AR(1) prewhitening's contribution.
+
+2. **Per-run vs cross-run LSA give nearly identical results** (within ±0.002 AUC). My cross-run implementation used block-diagonal per-run nuisance, so the trial regressors don't actually couple across runs — the "cross-run" aspect was only matrix-inversion shape, not real cross-run pooling.
+
+3. **Persistent LSA + K=10 LOSES to LSS + K=10** (-0.025 AUC). Once GLMdenoise is in, LSA's correlated-β-estimate penalty dominates; LSS's per-trial independence wins for the AUC metric.
+
+4. **The "truly persistent" cross-run mechanism Ernest is testing is NOT my block-diagonal implementation.** A real cross-run mechanism would require: shared nuisance components across runs (single PCA on full session), or same-image β sharing across runs, or an actually incremental model that accumulates evidence as new BOLD arrives. My current cells don't test that.
+
+### Implication
+
+The "persistent GLM" framing is meaningful and gives a small lift in absence of denoising — but doesn't compose with the GLMdenoise winner. **For closed-loop neurofeedback the recommendation stays: LSS + GLMdenoise K=10.** Persistent LSA is the right architectural choice if you can't do denoising; LSS wins if you can.
+
+The remaining open question — Ernest's actual cross-run mechanism — requires an incremental/streaming model architecture I haven't built. That's a follow-up.
+
+### Files
+
+- `drivers/run_persistent_glm.py` — per-run LSA + cross-run block-diagonal LSA cells
