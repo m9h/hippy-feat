@@ -587,3 +587,43 @@ The LDS-on-β approach is fine for capturing nuisance-correlated variance but wr
 ### Files added in this update
 
 - `drivers/run_lds_within_run.py` — 4-cell LDS factorial (OLS/AR(1) × K=0/K=10)
+
+---
+
+## Update 2026-04-30 (closing): state-space nuisance — equivalent to GLMdenoise
+
+Built option #2 from the state-space discussion: state captures NUISANCE (per-voxel AR(1)-correlated residual after LSA fit), observed via Kalman/RTS smoother. Per-trial β refit via LSS on **cleaned** BOLD (BOLD - smoothed nuisance state). This preserves per-trial discriminability that the previous LDS-on-β cell destroyed.
+
+### State-space nuisance results
+
+| Cell | AUC | Cohen's d | vs no-SS baseline |
+|---|---|---|---|
+| OLS | 0.6118 | 0.410 | — |
+| OLS + SS nuisance | 0.6123 | 0.412 | **+0.0005** |
+| OLS + GLMdenoise K=10 | 0.8675 | 1.529 | — |
+| **OLS + K=10 + SS nuisance** | **0.8681** | **1.531** | **+0.0006** |
+
+State-space nuisance subtraction adds essentially zero — both with and without GLMdenoise. Negligible delta on top of plain OLS, negligible delta on top of K=10.
+
+### Why it's a no-op
+
+The estimated per-voxel AR(1) coefficient on the LSA residual is **negative** (a̅ ≈ -0.4 to -0.5). That's high-frequency physiological noise alternating per TR (cardiac/respiratory near Nyquist), not slow drift. Kalman-smoothing this captures real noise, but its effect on per-trial β is minimal because trial regressors (HRF-convolved boxcars) don't strongly project onto Nyquist-frequency content.
+
+What about the slow drift / session-shared structure that should help? **GLMdenoise K=10 already captures it** via PCA on the noise pool. By the time you've subtracted those 10 components, the residual has very little slow-correlated structure left. The state-space machinery and PCA-on-noise-pool are mathematically distinct but functionally equivalent for capturing session-shared variance.
+
+### Conclusion
+
+**GLMdenoise K=10 is the right cell for closed-loop neurofeedback** (AUC 0.87, Cohen's d 1.53). Adding any of the following provides essentially zero additional lift:
+- Real fracridge (any flavor) — actively hurts due to per-voxel pattern distortion on a frozen pretrained model
+- Soft scalar fracridge — literal no-op
+- LDS-on-β smoother — actively hurts (homogenizes neighbors)
+- State-space nuisance subtraction — neutral (already captured by GLMdenoise)
+- aCompCor — neutral (alternative formulation of the same denoising)
+- AR(1) prewhitening — small lift (~+0.003 AUC)
+- Variant G vs AR(1) freq — tied
+
+For the deck: **the win is GLMdenoise K=10 with no further denoising stack on top.**
+
+### Files added in this update
+
+- `drivers/run_state_space_nuisance.py` — architecturally-correct state-space variant (state = nuisance, β fit conditional on cleaned BOLD)
