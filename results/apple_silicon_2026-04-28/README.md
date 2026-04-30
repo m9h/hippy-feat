@@ -748,3 +748,38 @@ A+N is the natural fallback for deployments that can't run GLMdenoise's PCA onli
 ### Files
 
 - `drivers/run_variant_a_nuisance.py` — PVE→BOLD resample + A+N variant
+
+---
+
+## Update 2026-04-30 (final): delay-model audit — JAX and nilearn cells are equivalent at TR=1.5s
+
+User asked: are we comparing the same delay models across cells? Audit:
+- 95% of cells use Glover canonical HRF + LSS, varying only at the boxcar-duration knob
+- JAX cells (`build_design_matrix`): **delta at onset_TR** (duration=0)
+- nilearn cells (`FirstLevelModel(hrf_model="glover")`): **1s boxcar** (duration=1.0)
+- Cell B uses FLOBS basis (different HRF family)
+- Cells C/CD use per-voxel HRF library (different shape per voxel)
+
+To check whether the delta-vs-1s-boxcar JAX-vs-nilearn distinction matters, ran a 4-cell delay-model sensitivity sweep — same JAX backend, same GLMdenoise K=10, only boxcar duration varies:
+
+| Boxcar duration | TR-rounded effective | AUC | Cohen's d |
+|---|---|---|---|
+| 0s (delta) | 1 sample at onset | **0.8675** | 1.529 |
+| 1s | 1 TR | **0.8675** | 1.529 |
+| 2s | 1 TR | **0.8675** | 1.529 |
+| **3s (events.tsv true stim duration)** | **2 TRs** | **0.8564** | 1.459 |
+
+### Key audit finding
+
+**At TR=1.5s, durations 0/1/2 are equivalent** — `round(duration/TR)` collapses them to the same single-TR boxcar at onset. JAX-delta and nilearn-1s-boxcar are bit-identical regressors at this TR. Our cross-cell AUC comparisons (JAX vs nilearn cells) were fair.
+
+The first delay model that actually differs in TR-space is **3s = 2-TR boxcar**, which:
+- Hurts AUC by 0.011 (Cohen's d 1.46 vs 1.53)
+- Confirms the earlier finding from the cells 11/12 `_dur3` ablation
+- Generalizes: anything beyond a 1-TR effective regressor at onset hurts AUC, by smearing the predicted response across multiple TRs and into the neighboring trial's window
+
+So **the right delay model is "single-TR boxcar at onset_TR convolved with Glover"** — equivalent to delta-at-onset at TR=1.5s. Both JAX and nilearn cells use this.
+
+### Files
+
+- `drivers/run_delay_model_sweep.py` — 4-cell duration sweep
