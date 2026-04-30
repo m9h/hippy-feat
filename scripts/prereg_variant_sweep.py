@@ -641,6 +641,15 @@ CELLS = {
     "AR1freq_glmsingleFull_fmriprep":
         dict(mode="ar1_freq", bold_source="fmriprep",
              hrf_strategy="glmsingle_lib", denoise="glmdenoise_fracridge"),
+    # BOLD-source isolation: fmriprep + Glover + GLMdenoise — head-to-head
+    # against cell 7 (rtmotion + Glover + GLMdenoise, AUC 0.886) tells us
+    # whether fmriprep BOLD adds anything once GLMdenoise is in place.
+    "AR1freq_glover_fmriprep_glmdenoise_fracridge":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glover", denoise="glmdenoise_fracridge"),
+    "VariantG_glover_fmriprep_glmdenoise_fracridge":
+        dict(mode="variant_g", bold_source="fmriprep",
+             hrf_strategy="glover", denoise="glmdenoise_fracridge"),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 

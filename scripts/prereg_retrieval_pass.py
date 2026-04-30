@@ -91,6 +91,8 @@ CELLS = [
     "VariantG_glmsingleFull_rtm",
     "VariantG_glmsingleS1_rtm",
     "AR1freq_glmsingleFull_fmriprep",
+    "AR1freq_glover_fmriprep_glmdenoise_fracridge",
+    "VariantG_glover_fmriprep_glmdenoise_fracridge",
 ]
 
 
