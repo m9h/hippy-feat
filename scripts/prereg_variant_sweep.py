@@ -625,6 +625,22 @@ CELLS = {
     "HybridOnline_streaming_pst8_AR1freq_glover_rtm":
         dict(mode="ar1_session_rho", bold_source="rtmotion",
              hrf_strategy="glover", streaming_post_stim_TRs=8),
+    # GLMsingle gap-fill: cell 6 covers Stage-1-alone, cells 7/8 cover
+    # Stages 2+3 with Glover HRF. The full Stage-1+2+3 stack and Stage 1
+    # paired with Variant G have never been measured. Mac scored Stage
+    # 1+2+3 only on top-1 (commit 2f96057, +0/+2pp) — never on AUC.
+    "AR1freq_glmsingleFull_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib", denoise="glmdenoise_fracridge"),
+    "VariantG_glmsingleFull_rtm":
+        dict(mode="variant_g", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib", denoise="glmdenoise_fracridge"),
+    "VariantG_glmsingleS1_rtm":
+        dict(mode="variant_g", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib"),
+    "AR1freq_glmsingleFull_fmriprep":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib", denoise="glmdenoise_fracridge"),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 

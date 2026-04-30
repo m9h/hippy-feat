@@ -86,6 +86,11 @@ CELLS = [
     "RT_streaming_pst8_ResidHOSVD_K5_partial",
     "RT_streaming_pst8_ResidHOSVD_K10_partial",
     "RT_streaming_pst8_ResidHOSVD_K5_full",
+    # GLMsingle gap-fill: full Stage 1+2+3 (rtmotion + fmriprep), Stage 1 + VG
+    "AR1freq_glmsingleFull_rtm",
+    "VariantG_glmsingleFull_rtm",
+    "VariantG_glmsingleS1_rtm",
+    "AR1freq_glmsingleFull_fmriprep",
 ]
 
 
