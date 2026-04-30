@@ -439,3 +439,64 @@ The deck/Discord story: **the right Variant G evaluation depends on the deployme
 - `drivers/run_B_merge_separate_posterior.py` — MC pairwise distance posterior
 - `merge_separate_results.json` — B output (per-cell AUC, Cohen's d, selective curves)
 - `retrieval_results_v9_NUTS_plus_mergesep.json` — full retrieval JSON including A's cell
+
+---
+
+## Update 2026-04-29 (very late): GLMdenoise × fracridge factorial
+
+Two clean factorials after the user pointed out the previous cells 7/8 confounded GLMdenoise with fracridge AND with AR(1).
+
+### A. K-sweep at frac=1.0 (no fracridge contamination) — `run_glmdenoise_K_sweep.py`
+
+| K | Top-1 | Top-5 |
+|---|---|---|
+| 0 | 56.7% | 80.0% |
+| 5 | 56.0% | 81.3% |
+| 10 | 55.3% | 80.0% |
+| 15 | 48.0% | 77.3% |
+
+**GLMdenoise alone barely moves top-1 (-0.7pp at K=5), and hurts at K=15.**
+
+### B. Full denoise × fracridge factorial — `run_denoise_factorial_v2.py`
+
+OLS + GLMdenoise(K) + per-voxel SVD-based fracridge (proper Rokem & Kay 2020 implementation, 4-component β vectors kept through full SVD-shrinkage).
+
+| K | frac | Top-1 |
+|---|---|---|
+| 0 | 1.0 (=OLS) | **56.7%** ← baseline |
+| 0 | 0.5 | 22.7% |
+| 0 | 0.3 | 29.3% |
+| 5 | 0.7 | 42.7% |
+| 5 | 0.3 | 38.0% |
+| 10 | 0.5 | 36.0% |
+| 15 | 0.5 | 32.0% |
+| 5 | CV per-voxel | **3.3%** (near chance, 1/50=2%) |
+
+**Every fracridge configuration HURTS retrieval on this frozen pretrained model** (range -14 to -53pp).
+
+### Why fracridge breaks here
+
+Fracridge is designed to be applied during model training so the classifier sees shrunk βs throughout. For us, the MindEye ridge is **frozen** and trained on un-fracridged βs. Per-voxel SVD-based fracridge introduces **per-voxel pattern distortion** (different shrinkage per voxel based on its singular-vector projection); this distorts the relative voxel-pattern the model expects. Scalar shrinkage (frac × β across all voxels) cancels through the cumulative-z-score and downstream linear ops, but per-voxel shrinkage doesn't.
+
+The CV-per-voxel cell (3.3% retrieval) is the worst because it amplifies this per-voxel pattern distortion: high-SNR voxels keep their scale while low-SNR voxels are aggressively shrunk, creating a signal pattern the trained model can't recognize.
+
+### Proper attribution of cells 7/8's 62% to AR(1), not denoising
+
+Original prereg cells 7 (`AR1freq_glover_rtm_glmdenoise_fracridge`) and 8 (`VariantG_glover_rtm_glmdenoise_fracridge`) both hit ~62%. With this factorial we now know:
+- AR(1) prewhitening (cell 2 vs cell 1): **+6pp** (the real source)
+- GLMdenoise K=5 alone (this sweep): -0.7pp
+- The original cells 7/8's "fracridge" was a soft scalar approximation (`0.5 × β + smoothing`), not real per-voxel SVD fracridge — that's why retrieval didn't bomb. Real fracridge bombs.
+
+### What still matters for closed-loop neurofeedback
+
+Despite top-1 retrieval being flat for denoising, **the merge/separate posterior AUC story is opposite**:
+- Bare VG: Cohen's d 0.56, AUC 0.68
+- VG + GLMdenoise+fracridge (the soft-scalar approximation): Cohen's d 1.49, AUC 0.83
+
+Denoising tightens per-trial posterior variance (good for pairwise discriminability) without improving the mean (so retrieval flat). For neurofeedback the posterior tightening is the win; for top-1 retrieval it isn't.
+
+### Files added in this update
+
+- `drivers/run_denoise_factorial_v2.py` — proper SVD-fracridge × K factorial
+- `drivers/run_glmdenoise_K_sweep.py` — K-sweep at frac=1.0 (no fracridge)
+- `retrieval_results_v10_denoise_factorial.json`
