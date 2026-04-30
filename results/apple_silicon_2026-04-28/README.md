@@ -500,3 +500,57 @@ Denoising tightens per-trial posterior variance (good for pairwise discriminabil
 - `drivers/run_denoise_factorial_v2.py` — proper SVD-fracridge × K factorial
 - `drivers/run_glmdenoise_K_sweep.py` — K-sweep at frac=1.0 (no fracridge)
 - `retrieval_results_v10_denoise_factorial.json`
+
+---
+
+## Update 2026-04-29 (final): AUC factorial — the right metric for closed-loop neurofeedback
+
+User caught me scoring the denoise/fracridge factorial on top-1 retrieval (50-way classification) when the actual neurofeedback target is pairwise merge/separate AUC. Re-scored everything.
+
+### AUC factorial table (pairwise discriminability — same-image vs diff-image distance)
+
+| Cell | AUC | Cohen's d | top-1 |
+|---|---|---|---|
+| Plain OLS | 0.612 | 0.410 | 56.7% |
+| **Soft scalar fracridge ALONE** (cells 7/8 formula, no denoise) | **0.612** | 0.410 | — |
+| OLS K=0 + F-ratio CV fracridge | 0.638 | 0.344 | — |
+| AR1freq alone | 0.701 | 0.720 | 62.7% |
+| VariantG alone | 0.684 | 0.647 | 60.0% |
+| OLS K=5 (no fracridge) | 0.843 | 1.432 | 56.0% |
+| OLS K=5 + F-ratio CV fracridge | 0.815 | 1.230 | — |
+| **OLS K=10 (no fracridge)** | **0.868** | **1.529** | 55.3% |
+| OLS K=10 + F-ratio CV fracridge | 0.838 | 1.324 | — |
+| OLS K=15 (no fracridge) | 0.860 | 1.501 | 48.0% |
+| AR1freq + soft fracridge + GLMdenoise (cell 7) | **0.871** | **1.609** | 62.0% |
+| VG + soft fracridge + GLMdenoise (cell 8) | 0.870 | 1.596 | 60.0% |
+| VG + aCompCor | 0.855 | 1.507 | 59.3% |
+| All real-SVD-fracridge cells (frac<1.0) | 0.51-0.56 (≈chance) | ~0 | 23-43% |
+
+### Two confirmed findings
+
+**1. Soft scalar fracridge is a no-op** — AUC = 0.6117 = identical to plain OLS. The cells 7/8 formula `β · 0.5 · (1 + ‖β‖/(‖β‖+1e-3))` evaluates to ≈1.0× for any non-tiny β. Cells 7/8's lift came entirely from GLMdenoise; the "fracridge" contributed nothing.
+
+**2. Real fracridge (per-voxel SVD) hurts AUC** in every CV variant tested:
+   - SNR-CV (mean β / std β across same-image reps): catastrophic (AUC 0.53, near chance)
+   - F-ratio CV (between-image-var / within-image-var): mild but present (-0.03 AUC vs no-fracridge K=10)
+   - Fixed frac<1.0: collapses to chance
+
+   The mechanism: per-voxel SVD-based shrinkage introduces per-voxel pattern distortion that the frozen pretrained MindEye ridge layer wasn't trained to recognize. F-ratio CV picks gentler shrinkage (mean f*=0.864) than SNR-CV (0.234), reducing damage but not eliminating it.
+
+### Final attribution (AUC ≠ top-1)
+
+| Component | top-1 contribution | AUC contribution |
+|---|---|---|
+| **GLMdenoise K=10 (no fracridge)** | -1.4pp | **+0.26 AUC, +1.1 Cohen's d** |
+| AR(1) prewhitening | +6pp | +0.09 AUC |
+| Real per-voxel SVD fracridge (any flavor) | -14 to -53pp | -0.03 to -0.10 AUC |
+| Soft scalar fracridge | 0 | 0 |
+| Variant G vs AR(1) freq | tied | tied |
+
+For closed-loop neurofeedback the win is **GLMdenoise K=10 alone**. The original cells 7/8 happened to do that PLUS AR(1) PLUS a soft-scalar that did nothing — the AUC came from the GLMdenoise component.
+
+### Files added in this update
+
+- `drivers/run_cv_fix_plus_soft.py` — F-ratio CV fracridge fix + soft-scalar isolation cell
+- `drivers/run_AUC_on_factorial.py` — pairwise AUC scorer for all factorial cells
+- `AUC_factorial_results.json` — full per-cell AUC + Cohen's d JSON
