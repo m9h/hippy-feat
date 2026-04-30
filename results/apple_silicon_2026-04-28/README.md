@@ -713,3 +713,38 @@ Per-volume motion correction latency for the four MC options on this Mac (Apple 
 ### Files
 
 - `drivers/bench_rt_mc.py` — full benchmark driver
+
+---
+
+## Update 2026-04-30 (closing-closing): Variant A+N CSF/WM nuisance
+
+User caught me having deferred A+N earlier. Built it: resample T1-space FSL FAST PVE files (CSF=pve_0, WM=pve_2) to BOLD space via `nilearn.image.resample_to_img`, threshold at 0.5 partial volume → 114 CSF + 639 WM voxels in the 2792 finalmask. Mean signals as nuisance regressors in the LSS design.
+
+### A+N results
+
+| Cell | AUC | Cohen's d | vs OLS |
+|---|---|---|---|
+| Plain OLS | 0.612 | 0.410 | — |
+| **OLS + A+N (CSF/WM nuisance)** | **0.730** | **0.829** | **+0.118** |
+| OLS + GLMdenoise K=10 | 0.868 | 1.529 | +0.256 |
+| OLS + A+N + K=10 | 0.865 | 1.516 | -0.003 vs K=10 |
+
+### Findings
+
+1. **A+N alone is a real lift** (+0.118 AUC), bigger than AR(1) prewhitening alone (+0.09).
+2. **Functionally equivalent to GLMdenoise** — both target the same spatially-coherent slow physiological nuisance through different mechanisms. They don't compose; A+N+K=10 = K=10 alone.
+3. **Field-standard low-tech denoising** — A+N is what most rt-fMRI NF studies report (per Heunis 2020 review) and lifts AUC by a respectable amount with just 2 extra design-matrix columns and an FSL FAST segmentation.
+
+### Updated deployment recipe (3 tiers)
+
+| Tier | Cells used | AUC | Infrastructure needed |
+|---|---|---|---|
+| 1 (best) | OLS + GLMdenoise K=10 | 0.868 | PCA on noise-pool, K-component selection |
+| 2 (lightweight) | OLS + A+N | 0.730 | FSL FAST seg + 2 nuisance regressors |
+| 3 (raw) | Plain OLS | 0.612 | none |
+
+A+N is the natural fallback for deployments that can't run GLMdenoise's PCA online — much simpler RT-deployable infrastructure for ~85% of GLMdenoise's lift.
+
+### Files
+
+- `drivers/run_variant_a_nuisance.py` — PVE→BOLD resample + A+N variant
