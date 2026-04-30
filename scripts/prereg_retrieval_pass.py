@@ -93,6 +93,15 @@ CELLS = [
     "AR1freq_glmsingleFull_fmriprep",
     "AR1freq_glover_fmriprep_glmdenoise_fracridge",
     "VariantG_glover_fmriprep_glmdenoise_fracridge",
+    # Paper's actual RT-pipeline betas at each Figure-3 delay
+    "Paper_RT_actual_delay0",
+    "Paper_RT_actual_delay1",
+    "Paper_RT_actual_delay3",
+    "Paper_RT_actual_delay5",
+    "Paper_RT_actual_delay10",
+    "Paper_RT_actual_delay15",
+    "Paper_RT_actual_delay20",
+    "Paper_RT_actual_delay63",
 ]
 
 
