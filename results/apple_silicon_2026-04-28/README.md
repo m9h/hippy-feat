@@ -370,3 +370,28 @@ A+N (CSF/WM nuisance regression) was not run because PVE files are at T1 resolut
 - `drivers/run_regime_c_local.py` — runs all 6 Regime C HOSVD cells
 - `drivers/run_deck_variants.py` — runs B, E, C+D using existing Variant classes
 - `retrieval_results_v7_regimeC_plus_deck.json` — concatenated retrieval JSON
+
+---
+
+## Update 2026-04-29 (late): three cross-run mechanisms tested — all fail
+
+Three distinct mechanisms attempted to close the 8pp Offline-vs-RT gap causally:
+
+| Mechanism | Cell | Top-1 | vs AR1freq baseline (62.7%) |
+|---|---|---|---|
+| Stationary noise parameter ρ̂ pooled across runs | `HybridOnline_AR1freq_glover_rtm` | 58.0% | **-4.7pp** |
+| Per-image evidence accumulation (Bayes update) | `SameImagePrior_VariantG_glover_rtm` | 59.3% | **-3.4pp** |
+| Per-voxel HRF basis weights (FLOBS, fitted on ses-01) | `VariantB_FLOBS_fitted_glover_rtm` | 32.0% | -30.7pp (recovered from 6%) |
+
+(Plus the previously-tested Regime C cross-run HOSVD: -18 to -26pp.)
+
+**All four cross-run mechanisms underperform plain per-trial AR(1) freq.** Windowing dominates, the gap is GLM-noise-floor intrinsic, and the 8pp residual is non-causal information.
+
+### Discord-ready conclusion
+
+> Real-time retrieval has a hard ceiling near 68% on this checkpoint at the 50-image task. The 8pp gap to Offline (76%) is GLM-noise-floor: per-trial β from ~10 TRs of cropped BOLD is fundamentally noisier than from 192 TRs of full-run BOLD. Closing the rest requires non-causal information (full-session AR(1), repeat-avg across all session BOLD). Tested 4 distinct cross-run mechanisms (spatial HOSVD filter, session ρ̂, per-image Bayes, FLOBS basis weights); none recover meaningful Δ_window.
+
+### Files added in this update
+
+- `drivers/run_three_followups.py` — runs cell 17 + same-image prior + FLOBS-fitted
+- `retrieval_results_v8_three_followups.json` — full retrieval JSON
