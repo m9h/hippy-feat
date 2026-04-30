@@ -627,3 +627,55 @@ For the deck: **the win is GLMdenoise K=10 with no further denoising stack on to
 ### Files added in this update
 
 - `drivers/run_state_space_nuisance.py` — architecturally-correct state-space variant (state = nuisance, β fit conditional on cleaned BOLD)
+
+---
+
+## Update 2026-04-30 (closing): rt-fMRI field methods — all neutral or negative
+
+User pointed at jsheunis/quality-and-denoising-in-rtfmri-nf (Heunis et al. 2020 methods review of 128 RT-fMRI NF studies). The catalog showed three methods commonly reported in the field that our pipeline didn't include: temporal smoothing, band-pass filtering (LPF), frame censoring. Tested all three on top of GLMdenoise K=10.
+
+### Field-method cells
+
+| Cell | AUC | Cohen's d | vs K=10 baseline (0.868) |
+|---|---|---|---|
+| **OLS + K=10 + TempSmooth (σ=1.5 TR)** | **0.674** | 0.625 | **-0.194** catastrophic |
+| OLS + K=10 + BandPass (HPF 0.01, LPF 0.15 Hz) | 0.853 | 1.444 | -0.015 small hurt |
+| OLS + K=10 + FrameCensor (FD>0.5mm) | 0.869 | 1.534 | +0.001 no-op |
+
+**Temporal smoothing is catastrophic** — same failure mode as LDS-on-β: σ=1.5 TR Gaussian kernel reaches into neighboring trials' time windows (4s ITI ≈ 2.7 TR), smearing trial-i BOLD into trial-{i+1}. Destroys per-trial discriminability that AUC depends on.
+
+**Band-pass slightly hurts** — adding LPF at 0.15 Hz removes some retrieval-relevant high-frequency stimulus-locked content along with cardiac/respiratory aliasing.
+
+**Frame censoring no-op** — sub-005 was a quiet subject (only 11/2112 TRs at FD > 0.5mm = 0.5%). Wouldn't generalize to high-motion subjects.
+
+### Complete tonight's negative-result catalog
+
+Methods tested for AUC lift on top of GLMdenoise K=10 — all flat or negative:
+
+| Mechanism | Δ AUC vs K=10 baseline |
+|---|---|
+| Real per-voxel SVD fracridge (any frac<1.0) | -0.03 to collapse to chance |
+| Soft scalar fracridge (cells 7/8 formula) | 0 (literal no-op) |
+| Per-voxel CV F-ratio fracridge | -0.03 (proper method, still hurts) |
+| LDS-on-β smoother (within run) | -0.05 (homogenizes neighbors) |
+| State-space nuisance subtraction | +0.0006 (functionally equivalent to GLMdenoise itself) |
+| AR(1) prewhitening | +0.003 |
+| **Temporal smoothing** | **-0.19 (catastrophic neighbor-mixing)** |
+| Band-pass LPF (+0.15 Hz) | -0.015 |
+| Frame censoring (FD > 0.5mm) | +0.001 (only 0.5% TRs censored on quiet subject) |
+
+### Final AUC headline
+
+**GLMdenoise K=10 IS the AUC ceiling on this checkpoint at 0.868.** Eleven distinct denoising/regularization mechanisms tested on top — none lift it meaningfully. The 0.87 ceiling reflects **per-trial-data-volume limits**, not denoising-sophistication limits. The right deployment recipe for closed-loop neurofeedback on this dataset:
+
+1. MCFLIRT motion correction (RT-deployable)
+2. Glover canonical HRF, LSS per-trial GLM
+3. **GLMdenoise K=10** (PCA on noise-pool, regress out)
+4. Cumulative z-score (paper §2.5)
+5. Repeat-averaging when applicable
+
+Adding fracridge, temporal smoothing, AR(p) prewhitening, LDS, state-space machinery, bandpass LPF, or frame censoring on top adds nothing or actively hurts.
+
+### Files added in this update
+
+- `drivers/run_field_methods_factorial.py` — temporal smoothing + bandpass + frame censoring cells
