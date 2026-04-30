@@ -679,3 +679,37 @@ Adding fracridge, temporal smoothing, AR(p) prewhitening, LDS, state-space machi
 ### Files added in this update
 
 - `drivers/run_field_methods_factorial.py` — temporal smoothing + bandpass + frame censoring cells
+
+---
+
+## Update 2026-04-30 (very late): MCFLIRT realtime benchmark
+
+Per-volume motion correction latency for the four MC options on this Mac (Apple M5 Max), 128×128×60 BOLD volume, n=3-10 trials each, TR=1.5s budget.
+
+### Latency table
+
+| Method | Mean ± std | Min | Max | TR usage |
+|---|---|---|---|---|
+| **FSL MCFLIRT** (stages=4, cost=normcorr) | 977ms ± 17ms | 955 | 997 | 65% |
+| jaxoccoli RigidBody (Adam 50 iter, 6-DOF) | 381ms ± 2ms | 378 | 383 | 25% |
+| jaxoccoli GaussNewton (6-DOF, 10 iter) | 381ms ± 0.4ms | 380 | 381 | 25% |
+| **jaxoccoli PhaseCorr** (FFT, translation-only) | **16ms ± 0.6ms** | 16 | 18 | **1%** |
+
+### Practical implications
+
+- **FSL MCFLIRT IS RT-deployable on Apple Silicon at TR=1.5s** — 977ms per volume includes all file I/O (writing single-volume NIfTI, reading mcflirt output + .par). Leaves ~520ms for downstream GLM + classifier.
+- **Tightening the TR drops MCFLIRT**: at TR=1.0s, 977ms leaves only 23ms headroom. At TR=0.8s, exceeds budget.
+- **jaxoccoli Adam/GN** at 381ms give 2.5× more headroom than MCFLIRT — same 6-DOF rigid-body math, different solver/implementation.
+- **PhaseCorr at 16ms** is 60× faster than MCFLIRT, but currently translation-only. Log-polar rotation pass (per `motion_phase.py` docstring) would need to be added for production parity.
+
+### Recommendation for deployment
+
+| TR | MC choice |
+|---|---|
+| 1.5s | FSL MCFLIRT works; jaxoccoli RigidBody preferred for headroom |
+| 1.0s | jaxoccoli RigidBody (Adam or GaussNewton) — MCFLIRT too tight |
+| 0.5-0.8s | jaxoccoli RigidBody, or PhaseCorr+rotation once rotation pass lands |
+
+### Files
+
+- `drivers/bench_rt_mc.py` — full benchmark driver
