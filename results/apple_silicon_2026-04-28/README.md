@@ -882,3 +882,47 @@ The canonical-mindeye reference excerpts are saved at `canonical_refs/`.
 - `GLOSSARY.md` — terminology pinned to operational definitions
 - `canonical_refs/utils_glm.py` — canonical GLM utilities (HRF library handling)
 - `canonical_refs/mindeye_py_GLM_excerpt.py` — the GLM call + cum-z block from mindeye.py:720-800
+
+---
+
+## Update 2026-04-30 (final-FINAL): canonical Princeton GLMsingle output reproduced
+
+User pointed at https://huggingface.co/datasets/rishab-iyer1/glmsingle — Princeton's published canonical GLMsingle outputs (TYPED_FITHRF_GLMDENOISE_RR.npz) for sub-005 (4 sessions + 2 combined) and sub-001 (3 sessions). Pulled 6.6 GB.
+
+### Canonical sub-005 ses-03 GLMsingle betas → retrieval
+
+Loaded `betasmd` (183408 brain voxels × 693 non-blank trials), projected through our finalmask (2792 voxels), applied paper cumulative z-score + repeat-averaging, scored on the finalmask MindEye checkpoint.
+
+**Result: TOP-1 = 76.00%, TOP-5 = 98.00%.**
+
+| Source | Top-1 | Top-5 |
+|---|---|---|
+| **Canonical Princeton GLMsingle (this run)** | **76.00%** | **98.00%** |
+| Spreadsheet "Offline baseline" | 77% | (98% MST 2-AFC) |
+| Our cell 12 (Glover+AR(1), no GLMsingle) | 76.00% | 94.00% |
+| Paper "Offline 3T" (per `TASK_2_1_STATUS.md`) | 76% | — |
+
+### Key observations from the canonical output
+
+1. **`pcnum = 0`** — GLMsingle Stage 2 (GLMdenoise) chose **zero PCA noise components** for sub-005 ses-03 (cross-validated). Princeton's GLMsingle did NOT add denoising components on this data; the AUC lift our K-sweep found is from a different (retrieval-based) optimization criterion.
+
+2. **`FRACvalue` mean = 0.076, range [0.05, 1.00]** — most voxels picked very heavy fracridge shrinkage in Stage 3. Matches my SNR-CV (mean 0.234) more than F-ratio CV (mean 0.864). Princeton's CV criterion converges with heavy-shrinkage voxel-level fracridge.
+
+3. **`HRFindex` range 0-19** — confirms the 20-HRF library (Stage 1) is per-voxel. The HRF library DID get used (vs Stage 2 K=0 not used).
+
+4. **693 trials = 770 events − 77 blanks** — exactly matches our events.tsv non-blank count.
+
+5. **Mask hierarchy** confirmed: canonical brain mask = 183,408 voxels (`sub-005_ses-03_task-C_brain.nii.gz`); NSDgeneral = 20,484; finalmask = 19,174; relmask intersection = 2,792.
+
+### What this rebuts and confirms
+
+**Rebuts**: my earlier finding that "fracridge always hurts AUC on a frozen pretrained model." The canonical βs ARE fracridge-shrunk (Stage 3) and achieve 76% top-1 / 98% top-5. The MindEye checkpoint was fine-tuned on the canonical fracridged βs, so consuming similar βs at test works. My fracridge-as-wrapper failures were because I applied fracridge to OLS βs that don't match the model's training input distribution.
+
+**Confirms**: GLMsingle Stage 2 (the GLMdenoise PCA-on-noise-pool) is **NOT load-bearing** here on sub-005 ses-03 — Princeton's CV picked K=0. Our retrieval-based K=10 win comes from a different optimization target than what GLMsingle's CV optimizes.
+
+**Confirms**: GLMsingle Stage 1 (per-voxel HRF library) + Stage 3 (fracridge) DO contribute — the 4pp top-5 gap between canonical (98%) and our cell 12 (94%) is the contribution of these stages with proper per-voxel-tuning (not the broken default-1/3-weights FLOBS we tested earlier).
+
+### Files added in this update
+
+- `drivers/score_canonical_glmsingle.py` — load canonical GLMsingle .npz + project through our masks + score retrieval
+- Canonical Offline result: 76.00% top-1 / 98.00% top-5 (saved as `Canonical_GLMsingle_OfflineFull` cell)
