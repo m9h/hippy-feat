@@ -959,3 +959,69 @@ This explains why the K-sweep on partial windowing (the prior `OLS_glover_rtm_de
 - `drivers/run_paper_eor_k10.py` — combines `rt_paper_full_replica.run_cell()` with K=10 PCA noise-pool components passed as nilearn confounds
 - `drivers/score_eor_k10.py` — single-rep scoring against paper checkpoint
 - Cell saved: `RT_paper_EoR_K10_inclz` (770, 2792) at `data/rtmindeye_paper/task_2_1_betas/prereg/`
+
+## Update 2026-05-01 (later): three follow-up EoR ablations + Slow tier diagnostic
+
+After the relmask K=10 result was rejected (with task-leakage hypothesis for the −6pp), three follow-up ablations were run on the EoR pipeline plus a Slow tier diagnostic.
+
+### EoR ablations (all single-rep + inclusive cum-z)
+
+| Cell | Top-1 | Top-5 | vs paper EoR (66%) | vs no-K EoR (56%) |
+|---|---|---|---|---|
+| `RT_paper_EndOfRun_pst_None_inclz` (baseline) | 56% | — | −10pp | — |
+| `RT_paper_EoR_K10_CSFWM_inclz` (K=10, CSF/WM pool) | **56%** | 76% | −10pp | **0pp (neutral)** |
+| `RT_paper_EoR_OLS_glover_inclz` (no AR1) | 48% | 70% | −18pp | −8pp |
+| `RT_paper_EoR_OLS_hrflib_inclz` (per-voxel HRF library) | 44% | 72% | −22pp | −12pp |
+| `RT_paper_EoR_OLS_glover_frac90_inclz` | 30% | 62% | −36pp | −26pp |
+| `RT_paper_EoR_OLS_glover_frac70_inclz` | 14% | 46% | −52pp | −42pp |
+| `RT_paper_EoR_OLS_glover_frac50_inclz` | 4% | 30% | −62pp | −52pp |
+
+**Findings:**
+
+1. **CSF/WM K=10 is exactly neutral.** Same noise-pool extraction as the relmask test but pool drawn from FAST-PVE-derived CSF ∪ WM voxels (~64K voxels in T1 space resampled to BOLD grid, threshold pve>0.5). Confirms the prior hypothesis: relmask K=10 hurt because relmask is task-driven by construction; CSF/WM is genuinely task-irrelevant so the K=10 components don't absorb signal. **GLMdenoise is not the missing EoR ingredient** — it neither helps nor hurts when applied correctly.
+
+2. **HRF library hurts 4pp** vs OLS+Glover apples-to-apples. Per-voxel HRF lookup using `avg_hrfs_s1_s2_full.npy` indices into the GLMsingle 20-HRF library does NOT improve EoR retrieval. Rules out HRF library as the missing ingredient.
+
+3. **Fracridge (global SVD post-fit) is catastrophic at all fracs.** This implementation shrinks the (n_trials × V) β matrix's singular values toward zero with brentq λ; absorbs task variance along with noise. A proper per-voxel-during-fit fracridge would need rewriting the LSS engine; this implementation rules out the global form.
+
+4. **Side finding: AR(1) contributes 8pp on EoR** (56% with AR(1) → 48% without). AR(1) prewhitening is load-bearing for full-run BOLD just as it was for partial windows.
+
+### Slow tier diagnostic — pst=25 closes 6pp of the −14pp gap
+
+Slow is the only paper anchor with a statistically significant gap (p=0.033). Tested three hypotheses on top of the existing pst sweep over 18-22 (which plateaued at 44-46%):
+
+| Cell | Top-1 | Top-5 | vs paper Slow (58%) | vs pst=20 baseline (44%) |
+|---|---|---|---|---|
+| `RT_paper_Slow_pst20_inclz` (baseline) | 44% | — | −14pp | — |
+| **`RT_paper_Slow_pst25_inclz`** | **50%** | 74% | **−8pp** | **+6pp** |
+| `RT_paper_Slow_pst30_inclz` | 46% | 74% | −12pp | +2pp |
+| `RT_paper_Slow_pst20_canonrez` (full-session re-z) | 46% | 72% | −12pp | +2pp |
+
+**Findings:**
+
+1. **pst=25 (37.5s window) closes nearly half the gap** — 50% top-1 vs paper's 58%. pst=30 (45s) regresses, so pst=25 is a local optimum.
+
+2. **Mechanistic interpretation:** if Slow's reported 29.45±2.63s "stim delay" actually meant "stim-to-decode delay = stim onset + BOLD acquisition window + HRF peak alignment", then the BOLD-acquisition window itself could be ~25 TR while the reported delay is ~20 TR plus headroom. Or the published value reflects time-to-decoder-readout including GLM compute time. Either way, the empirical Slow window is wider than our prior pst=20 reading of paper §2.6 ("∼29 seconds (∼7 trials) post stimulus-onset").
+
+3. **Canonical full-session re-z** (matching mindeye.py:770-784 re-z'ing of older betas with current stats) gives +2pp — consistent with the handoff memory note that this shouldn't matter much under the single-rep filter.
+
+### Net state of the paper anchor ladder after this round
+
+| Tier | Paper | Best reproduced | Gap | Sig? |
+|---|---|---|---|---|
+| Fast (pst=5) | 36% | 36% | 0pp ✓ | n/a |
+| **Slow (pst=25)** | 58% | **50%** | −8pp | borderline |
+| End-of-run (pst=None) | 66% | 56% | −10pp | non-sig (CI [42, 70]) |
+| Offline 3T | 76% | 76% | 0pp ✓ | n/a |
+
+The two endpoints still hit paper exactly. Slow improved from −14pp to −8pp by widening the window. End-of-run stays at −10pp despite three direct ablation attempts; combined with bootstrap CI containing 66, the most parsimonious reading is that the EoR residual gap is sampling variance + a small unaccounted contribution from something we haven't isolated (BOLD source rtmotion-vs-fMRIPrep is a candidate; HRF library implementation differences from canonical are another).
+
+### Files added in this update
+
+- `drivers/run_paper_eor_csfwm.py` — CSF/WM noise-pool K=10
+- `drivers/run_paper_eor_hrflib.py` — OLS + per-voxel HRF library on full-run BOLD; emits OLS+Glover apples-to-apples baseline
+- `drivers/run_paper_eor_fracridge.py` — OLS+Glover + global-SVD fracridge sweep (frac=0.5, 0.7, 0.9)
+- `drivers/run_slow_diagnostic.py` — Slow pst=25 + pst=30 + canonical full-session re-z
+- `drivers/score_eor_ablations.py` — multi-cell single-rep scorer for EoR ablations
+- `drivers/score_slow_diagnostic.py` — multi-cell single-rep scorer for Slow cells
+- All cells saved at `data/rtmindeye_paper/task_2_1_betas/prereg/`
