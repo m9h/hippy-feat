@@ -16,15 +16,37 @@ This doc is action-oriented. The analytical evidence behind every claim is in th
 | Current paper framing | What our data supports instead |
 |---|---|
 | The Offline-vs-RT 10 pp top-1 gap is "preprocessing pipeline" (fmriprep + GLMsingle) | The gap is dominantly **β-windowing** — RT's per-trial GLM sees only `onset + delay` TRs of BOLD, while Offline fits on the full session. Same data set, different β-estimation regime. The gap is structurally inherent to the RT setting, not a pipeline-feature gap. |
-| GLMsingle Stages 1, 2, 3 each contribute to the offline result | On sub-005, the canonical `TYPED_FITHRF_GLMDENOISE_RR.npz` has **`pcnum = 0`** — Stage 2 (GLMdenoise) was inactive (CV picked zero PCA components). The offline lift over a Glover + AR(1) + cum-z + repeat-avg baseline is **+0 pp top-1, +4 pp top-5**, attributable to **Stages 1 + 3** only. |
+| GLMsingle Stages 1, 2, 3 each contribute to the offline result | Stage 2 (GLMdenoise) is **subject- and session-specific** in the published canonical `.npz` files. CV-selected `pcnum` across the 9 available sessions: 0, 0, 1, 1, 1, 4, 4, 4, 6 — **maximum 6, never 10**. For sub-005 ses-03 (the Offline-anchor session) `pcnum = 0` and the bootstrap CV curve is **monotonically decreasing** in K (K=0: −764.5, K=10: −824.6) — adding any PCs strictly hurts. The offline lift over a Glover + AR(1) + cum-z + repeat-avg baseline is **+0 pp top-1, +4 pp top-5**, attributable to **Stages 1 + 3** only on this session. |
 | Top-1 image retrieval is the headline metric | For closed-loop deployment, **pairwise AUC** (same-image vs different-image β-distance) is the relevant metric. RT plateaus at AUC ≈ 0.826 by decode delay = 15; Offline reaches 0.886 with denoising. The 0.06 AUC delta is where the practical loss lives. |
 | AR(1) frequentist GLM is the right RT noise model | Variant G's Bayesian conjugate produces a per-trial posterior `(β_mean, β_var)` at the **same forward-pass cost** as AR(1) freq (1.6–4.8 ms/TR JIT'd). It enables confidence-gated selective accuracy of **84–90 % at τ = 0.9, covering 34–51 % of trials** — a regime AR(1) freq cannot produce because it has no posterior. |
 
 Concretely, three paper edits we would recommend:
 
 1. **Re-frame Figure 3** as a windowing-vs-causal-evidence-window comparison rather than a pipeline-feature comparison.
-2. **Add a footnote on `pcnum = 0`** for sub-005 — and rerun the same `.npz` inspection on other subjects to see whether GLMdenoise was suppressed pipeline-wide or just on this subject.
+2. **Be explicit about the subject-and-session-specific behavior of Stage 2 (GLMdenoise)**: the bootstrap-selected `pcnum` ranges 0–6 across the 9 published `.npz` outputs. For sub-005 ses-02 and ses-03 it's 0; for sub-001 ses-01 it's 6. RT-pipeline reimplementations should not treat GLMdenoise as a load-bearing default. Recommend reporting `pcnum` per anchor in the paper's pipeline-description section.
 3. **Add an AUC / confidence-aware evaluation** alongside top-1 to make the closed-loop deployment relevance explicit.
+
+### What the cross-session inspection establishes
+
+We pulled all `TYPED_FITHRF_GLMDENOISE_RR.npz` files from `rishab-iyer1/glmsingle` and read the bootstrap CV outputs:
+
+| path | `pcnum` | mean `FRACvalue` | bootstrap CV trend |
+|---|---|---|---|
+| `sub-001_ses-01` | 6 | 0.091 | non-monotone, optimum at K=6 — GLMdenoise genuinely helping |
+| `sub-001_ses-02` | 1 | 0.064 | mild dip at K=1, rises after — GLMdenoise barely useful |
+| `sub-001_ses-03` | 1 | 0.064 | same shape as ses-02 |
+| `sub-005_ses-01` | 4 | 0.077 | non-monotone, optimum at K=4 |
+| `sub-005_ses-01-02` | 4 | 0.063 | non-monotone, optimum at K=4 |
+| `sub-005_ses-01-03` | 4 | 0.061 | non-monotone, optimum at K=4 |
+| `sub-005_ses-02` | **0** | 0.079 | monotonically decreasing in K — GLMdenoise strictly hurts |
+| `sub-005_ses-03` | **0** | 0.076 | **monotonically decreasing** in K (K=0: −764.5, K=10: −824.6) |
+| `sub-005_ses-06` | 1 | 0.063 | mild dip at K=1 |
+
+Three locked findings:
+
+1. **`pcnum` is a single scalar K per pipeline run** chosen by GLMsingle's bootstrap CV. Maximum K observed across the entire dataset is **6**. The hypothesis that the paper silently applied K=10 anywhere cannot be right — it was never selected.
+2. **For the Offline-anchor session (sub-005 ses-03) the CV curve is smooth and monotonically decreasing in K**. Not a flake. K=10 was explicitly tested by the bootstrap procedure and would have made the result substantially worse than K=0.
+3. **GLMdenoise's contribution is genuinely subject- and session-dependent**. RT-pipeline reimplementations adding "Stage 2 with K=10" as a fixed default would underperform the canonical pipeline on the very session whose Offline number anchors Figure 3.
 
 ---
 
@@ -56,7 +78,7 @@ Pre-collected anat → tissue segmentation → 5-PC noise regression per TR. Exp
 - **Slow but standard**: FreeSurfer aseg from a prior session (offline), reused on scan day.
 - **Same-day**: FastSurfer ~60 s GPU pass on the scan-day anat — gets the WM/CSF mask before the first functional run.
 
-The relmask FAST PVE files (`T1_brain_seg_pve_{0,1,2}.nii.gz`) are already on disk. Important: pull the PCs from segmented WM/CSF, **not** from a high-variance pool inside the relmask — relmask voxels are task-driven by construction. The paper's `pcnum = 0` outcome and our independent K = 10 EoR test (rejected, hurt by 6 pp) both warn about this failure mode.
+The relmask FAST PVE files (`T1_brain_seg_pve_{0,1,2}.nii.gz`) are already on disk. Important: pull the PCs from segmented WM/CSF, **not** from a high-variance pool inside the relmask. The independent K=10 EoR test on a relmask-pool noise basis was rejected (hurt by 6 pp) because relmask voxels are task-driven by construction. This is consistent with the canonical pipeline's bootstrap CV preferring K=0 on sub-005 ses-02/03 — the noise pool selected by the canonical `.npz` (`pcvoxels` and `noisepool` fields) is more anatomically restricted than a top-variance relmask pool, which is why GLMdenoise can be useful on other sessions but is the wrong default for RT.
 
 ### 4. Fieldmap-based Susceptibility Distortion Correction (SDC) at scan start
 
