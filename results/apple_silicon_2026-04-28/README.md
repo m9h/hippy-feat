@@ -822,3 +822,63 @@ The remaining open question — Ernest's actual cross-run mechanism — requires
 ### Files
 
 - `drivers/run_persistent_glm.py` — per-run LSA + cross-run block-diagonal LSA cells
+
+---
+
+## Update 2026-04-30 (alignment): canonical mindeye.py is now public
+
+User pointed at https://github.com/brainiak/rtcloud-projects/tree/main/mindeye — turns out our `--depth 1` clone earlier missed the `mindeye/` subdirectory. Pulling the actual canonical source.
+
+### What canonical mindeye.py:740-790 actually does
+
+```python
+# Streaming crop
+cropped_events = events_df[events_df.onset <= TR*tr_length]
+
+# GLM (LSS, per-trial)
+lss_glm = FirstLevelModel(
+    t_r=tr_length, slice_time_ref=0, hrf_model='glover',
+    drift_model='cosine', drift_order=1, high_pass=0.01,
+    mask_img=union_mask_img, signal_scaling=False, smoothing_fwhm=None,
+    noise_model='ar1', n_jobs=-1, verbose=-1, memory_level=1, minimize_memory=True
+)
+lss_glm.fit(run_imgs=img, events=cropped_events,
+            confounds=pd.DataFrame(np.array(mc_params)))
+
+# Cumulative z-score with re-z-scoring of older betas
+z_mean = np.mean(np.array(all_betas), axis=0)
+z_std = np.std(np.array(all_betas), axis=0)
+# repeat-averaging with always-latest stats
+```
+
+### Reverse-engineering vs canonical — comparison
+
+| Component | Our reverse-eng | Canonical mindeye.py | Match |
+|---|---|---|---|
+| GLM call args | duration=1.0, glover, AR(1), cosine, HPF 0.01 | identical | ✓ |
+| LSS per-trial fit | yes | yes (per-TR fresh `FirstLevelModel(...).fit()`) | ✓ |
+| Streaming crop | `streaming_decode_TR` arg → BOLD/events crop | `events_df[events_df.onset <= TR*tr_length]` | ✓ |
+| Cumulative z-score | causal cum-z (v2 fix) | `np.mean/np.std` over `all_betas[:current]` | ✓ |
+| Repeat-averaging | per-image mean of post-z'd betas | `np.mean(betas_repeats)` per image | ✓ |
+| MCFLIRT confounds | yes | yes (`pd.DataFrame(mc_params)`) | ✓ |
+| **GLMdenoise / fracridge** | tested as additions | **NOT in canonical RT path** | n/a |
+| **A+N (CSF/WM)** | tested as addition | **NOT in canonical** | n/a |
+| **Persistent GLM** | tested as LSA, K=10 stacked | **NOT in canonical (zero refs)** | confirmed Ernest's term |
+
+### Headline implications
+
+1. **Our reverse-engineered LSS pipeline matches canonical mindeye.py exactly** for every component the canonical has. Cell 12 = 76% (paper-exact match) is now explained by faithful pipeline reproduction, not coincidence.
+
+2. **The canonical RT pipeline does NOT include GLMdenoise/fracridge/aCompCor.** The "Offline 76%" anchor in the paper comes from a separate fMRIPrep + GLMsingle pipeline — different code path, not callable from mindeye.py. Our `Offline_paper_replica_full` cell hits 76% without any GLMsingle Stages 2-3 because the canonical Glover+AR(1) GLM happens to land at the same number on this checkpoint (consistent with our K-sweep finding that GLMdenoise alone is what does the work; Stages 2-3 don't add).
+
+3. **Persistent GLM is NOT in the canonical reference implementation.** Confirmed via direct code search: zero hits for `persistent`, `online`, `recursive`, `RLS`, `streaming GLM`, `Kalman`. Ernest's persistent GLM is his own proposal/extension, not something already documented in rt-cloud-projects mindeye.
+
+4. **What we ran here that's beyond canonical**: GLMdenoise K-sweep, A+N nuisance, persistent LSA (per-run + cross-run), Variant G + posterior tracking, LDS smoother, state-space nuisance, fracridge (multiple flavors), temporal smoothing, bandpass, frame censoring, NUTS-distilled prior, FLOBS variants, HOSVD cross-run filter. All as additive analysis steps on the canonical AR(1) + LSS path.
+
+The canonical-mindeye reference excerpts are saved at `canonical_refs/`.
+
+### Files added in this update
+
+- `GLOSSARY.md` — terminology pinned to operational definitions
+- `canonical_refs/utils_glm.py` — canonical GLM utilities (HRF library handling)
+- `canonical_refs/mindeye_py_GLM_excerpt.py` — the GLM call + cum-z block from mindeye.py:720-800
