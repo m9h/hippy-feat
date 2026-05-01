@@ -102,6 +102,14 @@ CELLS = [
     "Paper_RT_actual_delay15",
     "Paper_RT_actual_delay20",
     "Paper_RT_actual_delay63",
+    # Princeton canonical GLMsingle (raw + repeat-avg)
+    "Canonical_GLMsingle_ses-03",
+    "Canonical_GLMsingle_ses-03_repeatavg",
+    # Streaming Stage 1+3 — RT-deployable canonical pipeline
+    "Streaming_S1S3_pst8_AR1freq_rtm",
+    "Streaming_S1S3_pst8_AR1freq_fmriprep",
+    "FullRun_S1S3_AR1freq_rtm",
+    "FullRun_S1S3_AR1freq_fmriprep",
 ]
 
 

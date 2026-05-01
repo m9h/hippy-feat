@@ -360,6 +360,45 @@ def _fracridge_voxel(beta_ols_per_voxel: np.ndarray,
     return (coef @ Vh).astype(np.float32)
 
 
+def _load_canonical_fracvalue_to_relmask(
+    glmsingle_dir: Path = Path(
+        "/data/derivatives/rtmindeye_paper/glmsingle/glmsingle_sub-005_ses-01-02_task-C"
+    ),
+) -> np.ndarray:
+    """Read per-voxel `FRACvalue` from a training-session canonical GLMsingle
+    output, project onto the MindEye 2792-voxel decoder mask. Returns a
+    (2792,) float array — RT-deployable as a precomputed shrinkage table.
+    """
+    import nibabel as nib
+    z = np.load(glmsingle_dir / "TYPED_FITHRF_GLMDENOISE_RR.npz", allow_pickle=True)
+    fv_full = z["FRACvalue"].squeeze().astype(np.float32)              # (V_canon,)
+    canon_brain = nib.load(
+        glmsingle_dir
+        / f"sub-005_{glmsingle_dir.name.replace('glmsingle_sub-005_', '').replace('glmsingle_', '')}_brain.nii.gz"
+    ).get_fdata() > 0
+    final_mask = nib.load(
+        Path("/data/derivatives/rtmindeye_paper/rt3t/data/sub-005_final_mask.nii.gz")
+    ).get_fdata() > 0
+    relmask = np.load(
+        Path("/data/derivatives/rtmindeye_paper/rt3t/data/sub-005_ses-01_task-C_relmask.npy")
+    )
+    me_positions = np.where(final_mask.flatten())[0][relmask]          # (2792,)
+    canon_brain_idx = -np.ones(canon_brain.size, dtype=np.int64)
+    canon_brain_idx[canon_brain.flatten()] = np.arange(canon_brain.sum())
+    me_in_canon = canon_brain_idx[me_positions]
+    if (me_in_canon < 0).any():
+        # Some MindEye voxels not in this training-session brain mask;
+        # default fraction = 1.0 (no shrinkage) for those
+        fv = np.ones(len(me_positions), dtype=np.float32)
+        valid = me_in_canon >= 0
+        fv[valid] = fv_full[me_in_canon[valid]]
+        n_default = int((~valid).sum())
+        print(f"  [frac-load] {n_default} of {len(me_positions)} relmask voxels "
+              f"not in training brain mask; defaulted to frac=1.0")
+        return fv
+    return fv_full[me_in_canon]
+
+
 def run_glm_cell_with_streaming(*args, streaming_post_stim_TRs: int | None = None, **kwargs):
     """Wrapper that lets streaming_post_stim_TRs be threaded through CELLS."""
     return run_glm_cell(*args, streaming_post_stim_TRs=streaming_post_stim_TRs, **kwargs)
@@ -385,6 +424,15 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
     # Reset session-rho cache for cell 17 path; populated lazily on first call
     globals()["_SESSION_RHO_CACHE"] = None
     globals()["_SESSION_RHO_TS"] = None
+
+    # Pre-load training-derived per-voxel fracridge table for canonical_frac
+    # denoise (Stage 3 with FRACvalue frozen from a prior session)
+    canonical_frac = None
+    if denoise == "canonical_frac":
+        canonical_frac = _load_canonical_fracvalue_to_relmask()
+        print(f"  [denoise=canonical_frac] loaded ses-01-02 FRACvalue, "
+              f"mean={canonical_frac.mean():.3f} range "
+              f"{canonical_frac.min():.3f}-{canonical_frac.max():.3f}")
 
     # First load all runs' BOLD + events (needed for denoising path)
     timeseries_per_run = []
@@ -561,6 +609,10 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
                 beta = beta * 0.5 * (
                     1.0 + ols_norm / (ols_norm + 1e-3)   # tiny smoothing
                 )
+            elif denoise == "canonical_frac" and canonical_frac is not None:
+                # Stage 3 with frozen-from-training per-voxel FRACvalue.
+                # RT-deployable: shrinkage table is precomputed offline.
+                beta = (beta * canonical_frac).astype(np.float32)
             all_betas.append(beta)
             img = events.iloc[trial_i].get("image_name", str(trial_i))
             trial_ids.append(str(img))
@@ -650,6 +702,30 @@ CELLS = {
     "VariantG_glover_fmriprep_glmdenoise_fracridge":
         dict(mode="variant_g", bold_source="fmriprep",
              hrf_strategy="glover", denoise="glmdenoise_fracridge"),
+    # Streaming GLMsingle Stage 1 + Stage 3 — RT-deployable canonical
+    # pipeline. Per-voxel HRF library (Stage 1, frozen from training)
+    # plus per-voxel scalar fracridge (Stage 3, FRACvalue frozen from
+    # ses-01-02 canonical GLMsingle output). Tests whether
+    # Stages 1+3 survive windowing — the H3' deliverable on the
+    # paper-Offline-vs-paper-RT gap.
+    "Streaming_S1S3_pst8_AR1freq_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac",
+             streaming_post_stim_TRs=8),
+    "Streaming_S1S3_pst8_AR1freq_fmriprep":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac",
+             streaming_post_stim_TRs=8),
+    "FullRun_S1S3_AR1freq_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac"),
+    "FullRun_S1S3_AR1freq_fmriprep":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac"),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 
