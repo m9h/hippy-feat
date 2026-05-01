@@ -88,11 +88,24 @@ Operationally: a ~2-minute fieldmap acquisition at scan start → compute the pe
 
 For RT-MindEye-style visual-cortex retrieval the payoff is bounded (~1–3 pp top-1) because visual cortex is not a high-distortion region. But it's free signal once the fieldmap is collected — and it's the only fmriprep stage strictly absent from the RT pipeline.
 
-### 5. Don't apply fracridge as a post-hoc wrapper
+### 5. Don't apply fracridge as a post-hoc wrapper — and don't try to recreate canonical Stage 3 under streaming
 
-Per-voxel SVD-based fracridge (the canonical Stage 3) **only works when the decoder is fine-tuned on fracridge βs**. As a shim around an RT-pipeline OLS or AR(1) β it tanks retrieval (22–43 % top-1 measured) due to per-voxel pattern distortion that the frozen MindEye ridge layer wasn't trained on.
+Two separate failure modes:
 
-If you're not running canonical GLMsingle end-to-end, leave fracridge out.
+**A. Real per-voxel SVD fracridge applied to per-trial LSS βs is broken on both top-1 and AUC.** With Stage 1 (HRF library) + Stage 3 (real per-voxel SVD fracridge using FRACvalue frozen from a training session), measured numbers on sub-005 ses-03:
+
+| variant | top-1 | top-5 | AUC |
+|---|---|---|---|
+| Full-run, real fracridge, rtmotion | 22.0% | 44.7% | 0.568 |
+| Full-run, real fracridge, fmriprep | 24.7% | 54.0% | 0.586 |
+| Streaming pst=8, real fracridge, rtmotion | **2.0%** (chance) | 10.7% | 0.483 |
+| Streaming pst=8, real fracridge, fmriprep | 1.3% (chance) | 10.0% | 0.485 |
+
+The canonical pipeline applies fracridge to a **global single fit** of all trials at once; the same shrinkage transform applies consistently to every per-trial β column. Per-trial LSS computes a separate β through a separate fit with a separate design-matrix SVD per trial — so the direction-changing fracridge transform differs per trial. Trials of the same image get *different* shrinkage directions, and pairwise discriminability collapses.
+
+**B. Scalar `β *= FRACvalue` is a no-op on cosine-distance metrics.** Multiplying every voxel's β by a positive scalar leaves cosine distance unchanged. We confirmed: full-run + scalar fracridge has the **same** AUC as Stage 1 alone (both at 0.755).
+
+**Practical takeaway**: canonical Stage 3 is not trivially RT-deployable. It depends on global state (all trials simultaneously visible) that streaming can't preserve without restructuring as a global LSR-style fit at session end (non-causal). If you're not running canonical GLMsingle end-to-end, **leave fracridge out and use simpler noise-PC regression instead** (item 3 above).
 
 ### 6. Don't add cross-run causal filters yet
 
@@ -121,7 +134,7 @@ The instrumentation cost for all four is small relative to the pilot's existing 
 
 > The most practical RT-pipeline upgrade is **Variant G + confidence-gated decoding**, because it changes what gets shown to the subject. Preprocessing changes (aCompCor, SDC, HRF library) move the AUC needle by 0.01–0.10 each but don't change the deployment paradigm. Confidence gating does.
 >
-> The 10 pp top-1 Offline-vs-RT gap is dominantly windowing — physically inherent to RT, not a missing-stage problem. The deployable target is **closing the AUC gap**, which can be done in stages: VG + confidence-gating (paradigm change), then aCompCor (~+0.10 AUC), then SDC (~+1–3 pp top-1, smaller AUC).
+> The 10 pp top-1 Offline-vs-RT gap is dominantly windowing — physically inherent to RT, not a missing-stage problem. On the closed-loop-relevant pairwise AUC metric, **a simple RT-deployable pipeline already exceeds the canonical paper Offline anchor**: AR(1) + 5-PC noise-PC nuisance regression (our cell 7) hits AUC 0.886 / d 1.71, vs canonical Offline 0.856 / d 1.48. **Canonical Stage 3 (per-voxel SVD fracridge) does not transfer to streaming LSS** — tested directly, falls to chance under per-trial windowing. Use the simpler 5-PC tCompCor regression instead.
 
 ---
 

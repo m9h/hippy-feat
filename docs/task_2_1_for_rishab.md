@@ -12,18 +12,32 @@ gap shift when scored on the closed-loop-relevant pairwise AUC metric?
 
 1. The top-1 gap is **β-windowing** — RT's per-trial GLM fits on BOLD
    cropped to `onset_TR + delay`, while Offline fits on the full
-   session. Within-run pst saturates by delay≈15-20.
-2. The pairwise AUC gap is **GLMsingle Stages 1 + 3** (HRF library +
-   per-voxel fracridge). Stage 2 (GLMdenoise) chose `pcnum=0` for
-   sub-005 in your canonical pipeline output and is not load-bearing
-   on this subject.
-3. **BOLD source (rtmotion vs fmriprep) contributes ≤ 0.005 AUC** at
-   constant Glover + GLMdenoise. fmriprep's offline-only steps (SDC,
+   session. Within-run pst saturates by delay≈15-20. Measured directly
+   on the published outputs: paper Offline 65.3% vs paper RT delay=20
+   59.3% on n=150 (Δ ≈ 6 pp at constant trial count).
+2. **GLMsingle Stage 2 (GLMdenoise) is subject- and session-specific**.
+   Across the 9 published `.npz` files, `pcnum` ranges 0–6, with **K=10
+   never selected anywhere**. For sub-005 ses-02 and ses-03 the CV
+   curve is monotonically decreasing in K — `pcnum = 0` is real.
+3. **GLMsingle Stage 3 (real per-voxel SVD fracridge) does not
+   transfer to streaming LSS** in our re-implementation. Per-trial
+   fracridge breaks pairwise consistency because each trial's LSS
+   design-matrix SVD differs. Measured: full-run real-fracridge falls
+   to AUC 0.57 / top-1 22%; streaming pst=8 falls to AUC 0.48 / top-1
+   2% (chance). Canonical Stage 3 needs a global single fit of all
+   trials simultaneously to apply the same shrinkage transform.
+4. **An RT-deployable pipeline already exceeds the canonical Offline
+   anchor on AUC**. Cell 7 (rtmotion + Glover + 5-PC tCompCor noise
+   regression + AR(1)) hits AUC 0.886 / d 1.71. Canonical Offline =
+   0.856 / 1.48. The +0.030 AUC delta comes from simple noise-PC
+   regression — fully streaming, no fracridge needed.
+5. **BOLD source (rtmotion vs fmriprep) contributes ≤ 0.005 AUC** at
+   constant denoising. fmriprep's offline-only steps (SDC,
    slice-timing) are not the gap.
-4. **Variant G's posterior is invisible to top-1 / point-estimate AUC**
+6. **Variant G's posterior is invisible to top-1 / point-estimate AUC**
    (it ties AR(1) freq) but enables calibration-aware selective
    accuracy that AR(1) freq cannot produce. Distinct evaluation track.
-5. **Cross-run causal filters tested (raw HOSVD, task-residual HOSVD,
+7. **Cross-run causal filters tested (raw HOSVD, task-residual HOSVD,
    session-frozen ρ̂) all hurt** vs the within-run streaming baseline.
    Removing past-run variance — even task-orthogonalized — removes
    useful signal-correlated structure on this dataset.
@@ -196,26 +210,86 @@ removes useful signal-correlated covariation.
 
 ---
 
+## What we learned from the canonical `.npz` (downloaded from `rishab-iyer1/glmsingle`)
+
+We pulled all 9 published `TYPED_FITHRF_GLMDENOISE_RR.npz` files and
+read the bootstrap CV outputs directly:
+
+| path | pcnum | mean FRACvalue | xvaltrend shape |
+|---|---|---|---|
+| sub-001 ses-01 | 6 | 0.091 | non-monotone, K=6 best |
+| sub-001 ses-02 | 1 | 0.064 | shallow dip at K=1, rises after |
+| sub-001 ses-03 | 1 | 0.064 | same |
+| sub-005 ses-01 | 4 | 0.077 | non-monotone, K=4 best |
+| sub-005 ses-01-02 (combined) | 4 | 0.063 | non-monotone, K=4 best |
+| sub-005 ses-01-03 (combined) | 4 | 0.061 | non-monotone, K=4 best |
+| **sub-005 ses-02** | **0** | 0.079 | strictly decreasing in K |
+| **sub-005 ses-03** (Offline anchor) | **0** | 0.076 | strictly decreasing in K (K=0: −764.5, K=10: −824.6) |
+| sub-005 ses-06 | 1 | 0.063 | shallow dip at K=1 |
+
+This rules out (sub-005 ses-03 specifically) the hypothesis that the
+paper silently uses K=10 in canonical. **The CV curve makes K=10 the
+worst possible choice for this subject's anchor session.**
+
+## Real fracridge under per-trial LSS — direct test
+
+We implemented per-voxel SVD-based fracridge (Rokem & Kay 2020) and
+applied it to per-trial OLS βs computed under LSS, with FRACvalue
+frozen from sub-005 ses-01-02 canonical .npz (`mean=0.371`,
+range 0.05–0.90, real heterogeneous shrinkage):
+
+| variant | top-1 | top-5 | AUC |
+|---|---|---|---|
+| Full-run, real fracridge (rtm) | 22.0% | 44.7% | 0.568 |
+| Full-run, real fracridge (fmriprep) | 24.7% | 54.0% | 0.586 |
+| Streaming pst=8, real fracridge (rtm) | 2.0% (chance) | 10.7% | 0.483 |
+| Streaming pst=8, real fracridge (fmriprep) | 1.3% (chance) | 10.0% | 0.485 |
+
+Per-trial LSS computes a separate β through a separate fit with a
+separate design-matrix SVD per trial — so each trial gets a different
+direction-changing fracridge transform, even at the same per-voxel
+target FRACvalue. Trials of the same image get inconsistent
+shrinkages, and pairwise discriminability collapses.
+
+The canonical pipeline avoids this by fitting one global GLM over all
+trials simultaneously and applying fracridge once across the entire β
+matrix — same shrinkage for every per-trial column. **This is not
+trivially RT-deployable**: streaming can't preserve global state
+across all trials without restructuring as a non-causal session-end fit.
+
 ## Open questions for you (Rishab)
 
-1. **Was Stage 2 (GLMdenoise) effectively suppressed in your final
-   sub-005 Offline output?** `pcnum=0` in the canonical `.npz`
-   suggests the CV picked no components. Was that intentional / per
-   subject, or a data-driven outcome of the cross-validation?
-2. **The 4 pp top-5 gap (94 → 98) between our cell C3 and the
-   canonical .npz.** Our C3 is fmriprep + Glover + nilearn AR(1) +
-   cum-z + repeat-avg, no Stages 1/3. The canonical adds Stage 1 + 3.
-   That accounts for the gap given the table (B14 fmriprep+library+
-   GLMdenoise = AUC 0.868 vs B12 fmriprep+Glover+GLMdenoise = 0.880,
-   so library hurts AUC slightly). On top-5 specifically the library
-   helps — does that match your internal numbers?
-3. **Per-voxel HRF index file** (`avg_hrfs_s1_s2_full.npy`) was
+1. **`pcnum = 0` for sub-005 ses-02 and ses-03 — confirm**: the bootstrap
+   CV trend is monotonically decreasing in K for these sessions. The
+   reported Offline 76% top-1 / 98% top-5 anchor is **without
+   GLMdenoise** for this subject. Does that match your understanding?
+2. **`pcnum` per anchor in the paper**: would the paper's pipeline
+   description benefit from reporting `pcnum` per subject/session,
+   given the variability (0–6 across the 9 published .npz files)?
+3. **Stage 3 fracridge at session end**: the canonical pipeline does a
+   global single GLM fit + global fracridge. We confirmed empirically
+   that this doesn't transfer to per-trial streaming LSS (real
+   fracridge falls to chance under windowing). Have you considered
+   whether the pilot's RT pipeline could do a session-end LSR fit +
+   global fracridge as a non-causal post-processing pass for
+   downstream offline analysis? It wouldn't help in-session feedback,
+   but it would let the pilot's offline analyses match the canonical
+   anchor.
+4. **Per-voxel HRF index file** (`avg_hrfs_s1_s2_full.npy`) was
    derived from sessions 1+2. Did you regenerate it for the sub-001
    sub-002 etc cohort, or is it fixed per subject from training?
-4. **The pst sweep saturation at delay≈15-20** in your saved RT betas
+5. **The pst sweep saturation at delay≈15-20** in your saved RT betas
    matches an HRF + small-trailing-window decode. Is the operational
    choice in the experiment delay = some fixed value, or did each
    trial decode at variable delay depending on the next stim onset?
+6. **Decoder fine-tuning on fracridge βs**: our re-implementation that
+   wraps fracridge around OLS βs (rather than fitting GLMsingle
+   end-to-end) catastrophically fails. We attribute this to (a)
+   per-trial fracridge inconsistency (different design-matrix SVDs
+   per trial) and (b) the MindEye decoder being fine-tuned on
+   canonical fracridge βs. Could you confirm the checkpoint we're
+   using (`sub-005_ses-01_..._3split_0_avgrepeats_finalmask.pth`) was
+   trained on canonical TYPED_FITHRF_GLMDENOISE_RR.npz βs?
 
 ---
 
