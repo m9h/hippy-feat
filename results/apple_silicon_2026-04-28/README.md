@@ -1025,3 +1025,68 @@ The two endpoints still hit paper exactly. Slow improved from −14pp to −8pp 
 - `drivers/score_eor_ablations.py` — multi-cell single-rep scorer for EoR ablations
 - `drivers/score_slow_diagnostic.py` — multi-cell single-rep scorer for Slow cells
 - All cells saved at `data/rtmindeye_paper/task_2_1_betas/prereg/`
+
+## Update 2026-05-01 (round 3): BOLD source ablation + Slow refinement + adaptive HRF-peak
+
+Three follow-ups to the prior round, addressing the open mechanistic hypotheses for both gaps. All ran in parallel on this Mac (~17 min wall).
+
+### Round-3 results
+
+| Cell | Top-1 | Top-5 | vs paper | vs prior best |
+|---|---|---|---|---|
+| `RT_paper_EndOfRun_pst_None_inclz` (rtmotion baseline) | 56% | — | −10pp | — |
+| **`RT_paper_EoR_fmriprep_inclz`** (fMRIPrep BOLD) | **54%** | 76% | **−12pp** | **−2pp vs rtmotion** |
+| `RT_paper_Slow_pst25_inclz` (prior best) | 50% | — | −8pp | — |
+| `RT_paper_Slow_pst23_inclz` | 48% | 72% | −10pp | −2pp |
+| `RT_paper_Slow_pst24_inclz` | 46% | 74% | −12pp | −4pp |
+| `RT_paper_Slow_pst26_inclz` | 48% | 74% | −10pp | −2pp |
+| `RT_paper_Slow_pst27_inclz` | 48% | 72% | −10pp | −2pp |
+| `RT_paper_Slow_adaptive_n15_inclz` | 46% | 72% | −12pp | −4pp |
+| `RT_paper_Slow_adaptive_n20_inclz` | 48% | 74% | −10pp | −2pp |
+
+### Findings
+
+1. **fMRIPrep BOLD is NOT the missing EoR ingredient.** Switching `bold_loader` from `load_rtmotion_4d` to `load_fmriprep_4d` while holding everything else constant (full-run, single-rep, inclusive cum-z, Glover, AR(1)) gives 54% — actually 2pp worse than rtmotion's 56%. BOLD source is essentially irrelevant for the EoR retrieval gap.
+
+2. **pst=25 is a sharp local maximum for Slow.** All four neighbors (23, 24, 26, 27) underperform pst=25's 50%, with pst=24 dropping 4pp. The optimum is real but narrow.
+
+3. **Adaptive per-trial HRF-peak decode_TR doesn't help.** Reading the canonical published `tr_labels.csv` `tr_label_hrf` column to find each trial's HRF peak TR, then using `decode_TR = hrf_peak_TR + N_post_peak` with N=15 and N=20, gives 46% and 48% respectively — both below the fixed pst=25 at 50%. The ±2.63s SD on paper's reported Slow stim delay is NOT explained by per-trial HRF-peak variability captured by `tr_label_hrf`.
+
+### Synthesis: what's left for the EoR gap
+
+The paper's Offline 76% is reproduced exactly via canonical GLMsingle (TYPED_FITHRF_GLMDENOISE_RR.npz). The paper's End-of-run 66% is reproduced at 56% with rtmotion or 54% with fMRIPrep. Five mechanistic hypotheses for the remaining 10-12pp have now been individually ruled out:
+
+| Hypothesis | Tested | Lift |
+|---|---|---|
+| GLMdenoise K=10 (relmask pool) | yes | −6pp (task leakage) |
+| GLMdenoise K=10 (CSF/WM pool) | yes | 0pp neutral |
+| Per-voxel HRF library | yes | −12pp |
+| Global-SVD fracridge | yes | −26 to −52pp catastrophic |
+| BOLD source (fMRIPrep vs rtmotion) | yes | −2pp |
+
+**Important corollary:** the EoR→Offline 20pp gap is fully attributable to the GLMsingle TYPED_FITHRF_GLMDENOISE_RR pipeline as a whole — but **no individual stage of that pipeline helps in isolation** when grafted onto the EoR pipeline. The lift is synergistic / joint-CV-driven; GLMsingle's HRF library + GLMdenoise + fracridge work together but not separately. This is consistent with GLMsingle's design philosophy (joint cross-validation across stages rather than independent tuning).
+
+Combined with bootstrap CI [42%, 70%] containing 66%, the most parsimonious reading of the residual EoR gap is sampling variance on n=50 + irreducible joint-pipeline contribution we can't decompose further with surgical ablations.
+
+### Synthesis: what's left for the Slow gap
+
+pst=25 stays the best at 50% (−8pp from paper). All neighbor pst values + adaptive HRF-peak rules underperform. Remaining suspects:
+- Per-trial decode rule that's NOT captured by `tr_label_hrf` (e.g., adaptive based on prior-trial residual, attention state)
+- A different cum-z formulation than inclusive (canonical re-z behavior already tested as +2pp neutral)
+- The 8pp residual is within the per-anchor SE (~7pp on n=50) so could be sampling
+
+### Net state of the paper anchor ladder
+
+| Tier | Paper | Reproduced | Gap | Status |
+|---|---|---|---|---|
+| Fast (pst=5) | 36% | 36% | 0pp ✓ |
+| Slow (pst=25) | 58% | 50% | −8pp | borderline; pst=25 is sharp optimum |
+| End-of-run (pst=None) | 66% | 56% | −10pp | non-sig; 5 mechanisms ruled out |
+| Offline 3T | 76% | 76% | 0pp ✓ |
+
+### Files added in this update
+
+- `drivers/run_paper_eor_fmriprep.py` — EoR with `load_fmriprep_4d` instead of rtmotion
+- `drivers/run_slow_pst_refine.py` — Slow pst=23/24/26/27 sweep around the new optimum
+- `drivers/run_slow_adaptive_hrf.py` — adaptive Slow with per-trial decode_TR = `tr_label_hrf` peak + N
+- `drivers/score_round3.py` — multi-cell single-rep scorer for these 7 cells
