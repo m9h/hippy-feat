@@ -926,3 +926,36 @@ Loaded `betasmd` (183408 brain voxels × 693 non-blank trials), projected throug
 
 - `drivers/score_canonical_glmsingle.py` — load canonical GLMsingle .npz + project through our masks + score retrieval
 - Canonical Offline result: 76.00% top-1 / 98.00% top-5 (saved as `Canonical_GLMsingle_OfflineFull` cell)
+
+## Update 2026-05-01: EoR + GLMdenoise K=10 hypothesis test — REJECTED
+
+**Hypothesis**: the residual −10pp gap on End-of-run (56% reproduced vs 66% paper) is because the paper silently applies GLMdenoise K=10 inside the EoR cell. Plausible because EoR is the only RT tier with enough volumes (~190/run) to estimate a stable PCA noise pool — Fast (5 TR) and Slow (20 TR) windows are too narrow for that.
+
+**Test**: identical to RT_paper_EndOfRun_pst_None_inclz, but K=10 noise components (top-10%-variance voxels in the relmask, same `_extract_noise_components_per_run` as the K-sweep) passed as nilearn `confounds` alongside MCFLIRT motion. Otherwise unchanged: full-run BOLD, single-rep, inclusive cum-z, Glover, AR(1).
+
+### Result
+
+| Cell | Top-1 | vs paper EoR (66%) | vs no-K=10 EoR baseline (56%) |
+|---|---|---|---|
+| `RT_paper_EndOfRun_pst_None_inclz` | 56% | −10pp | — |
+| **`RT_paper_EoR_K10_inclz`** | **50%** | **−16pp** | **−6pp** |
+
+K=10 hurts EoR by 6pp rather than closing the gap. Sanity check on the betas: mean −0.007, std 0.996, max 10.20 — same scale as the no-K cell, so this isn't numerical blow-up; the model just discriminates worse.
+
+### Mechanistic explanation
+
+The noise pool was top-10%-variance voxels *inside the relmask*. Relmask was selected for high cross-repeat reliability, so those are task-driven voxels by construction. The top-10 PCs of their timecourses include image-driven structure. Adding those PCs as confounds projects out signal, not noise.
+
+This explains why the K-sweep on partial windowing (the prior `OLS_glover_rtm_denoiseK*` cells) was flat: per-trial GLM only had 5-12 TRs of data, so 10-component projection had limited dimensional impact. Full-run EoR with ~190 TRs gives the components room to absorb more variance — including task variance.
+
+### Implications
+
+- **GLMdenoise-with-relmask-pool is ruled out** as the missing ingredient on EoR.
+- The cleaner test (CSF/WM-derived noise pool from `T1_brain_seg_pve_{0,2}.nii.gz` PVEs) is queued — that pool is genuinely task-irrelevant and matches canonical GLMdenoise more closely.
+- Bootstrap CI on the EoR baseline is still [42%, 70%] containing 66% — the 10pp gap was never statistically significant, so the remaining suspects (HRF library, fracridge, BOLD source) may not even need to fully close the gap.
+
+### Files added in this update
+
+- `drivers/run_paper_eor_k10.py` — combines `rt_paper_full_replica.run_cell()` with K=10 PCA noise-pool components passed as nilearn confounds
+- `drivers/score_eor_k10.py` — single-rep scoring against paper checkpoint
+- Cell saved: `RT_paper_EoR_K10_inclz` (770, 2792) at `data/rtmindeye_paper/task_2_1_betas/prereg/`
