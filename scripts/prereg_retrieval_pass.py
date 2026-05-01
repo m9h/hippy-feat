@@ -110,6 +110,10 @@ CELLS = [
     "Streaming_S1S3_pst8_AR1freq_fmriprep",
     "FullRun_S1S3_AR1freq_rtm",
     "FullRun_S1S3_AR1freq_fmriprep",
+    "FullRun_S1S3realFRAC_rtm",
+    "FullRun_S1S3realFRAC_fmriprep",
+    "Streaming_S1S3realFRAC_pst8_rtm",
+    "Streaming_S1S3realFRAC_pst8_fmriprep",
 ]
 
 

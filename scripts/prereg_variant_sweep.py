@@ -241,6 +241,39 @@ def _glm_jax(timeseries: np.ndarray, onsets: np.ndarray, probe_trial: int,
     return b[:, probe_col], np.maximum(v[:, probe_col], 1e-10)
 
 
+def _glm_glmsingle_per_voxel_hrf_real_fracridge(
+        timeseries: np.ndarray, onsets: np.ndarray, probe_trial: int,
+        tr: float, n_trs: int, hrf_indices: np.ndarray,
+        hrf_library: np.ndarray, base_time: np.ndarray,
+        fracvalue: np.ndarray) -> np.ndarray:
+    """Stage 1 + Stage 3: per-voxel HRF library + per-voxel SVD fracridge.
+
+    Replicates the canonical TYPED_FITHRF_GLMDENOISE_RR fracridge operation
+    (when pcnum=0, which is the case for sub-005 ses-03).
+
+    timeseries  (V, T)   per-voxel BOLD
+    fracvalue   (V,)     per-voxel target fraction (RT-deployable: from
+                         training-session canonical .npz)
+    Returns probe-column β (V,) after fracridge shrinkage.
+    """
+    n_voxels = timeseries.shape[0]
+    result = np.zeros(n_voxels, dtype=np.float32)
+    n_hrf_trs = int(np.ceil(32.0 / tr))
+    unique_hrfs = np.unique(hrf_indices)
+    for h in unique_hrfs:
+        voxel_ids = np.where(hrf_indices == int(h))[0]
+        if len(voxel_ids) == 0:
+            continue
+        hrf = resample_hrf(hrf_library[:, int(h)], base_time, tr, n_hrf_trs)
+        dm, probe_col = build_design_matrix(onsets, tr, n_trs, hrf, probe_trial)
+        Y = timeseries[voxel_ids]                                  # (V_h, T)
+        beta_frac = _ols_fracridge_per_voxel(
+            dm, Y, fracvalue[voxel_ids],
+        )                                                           # (V_h, P)
+        result[voxel_ids] = beta_frac[:, probe_col]
+    return result
+
+
 def _glm_glmsingle_per_voxel_hrf(timeseries: np.ndarray, onsets: np.ndarray,
                                   probe_trial: int, tr: float, n_trs: int,
                                   hrf_indices: np.ndarray, hrf_library: np.ndarray,
@@ -360,6 +393,61 @@ def _fracridge_voxel(beta_ols_per_voxel: np.ndarray,
     return (coef @ Vh).astype(np.float32)
 
 
+def _ols_fracridge_per_voxel(X: np.ndarray, Y: np.ndarray,
+                               target_frac: np.ndarray,
+                               n_grid: int = 51) -> np.ndarray:
+    """Per-voxel SVD-truncated ridge with shrinkage matched to target_frac.
+
+    Implements the canonical fracridge operation (Rokem & Kay 2020):
+    β(λ_v) = V (σ ⊙ z_v) / (σ² + λ_v), where λ_v is chosen so that
+    ‖β(λ_v)_v‖ / ‖β_OLS_v‖ = target_frac[v].
+
+    Direction-changing per voxel (SVD components shrunk by different
+    amounts), not the scalar `β * frac` rescale that leaves cosine
+    distance structure unchanged.
+
+    Args
+    ----
+    X            (T, P) design matrix
+    Y            (V, T) BOLD per voxel (raw or AR(1)-prewhitened)
+    target_frac  (V,)   per-voxel target fraction in [0, 1]
+    n_grid       int    number of λ values to scan when finding the per-
+                        voxel target fraction (51 = ~1.5x denser than the
+                        canonical 21-point grid; cheap)
+
+    Returns (V, P) per-voxel fracridge β.
+    """
+    eps = 1e-10
+    U, S, Vt = np.linalg.svd(X, full_matrices=False)            # X = U Σ V^T
+    z = U.T @ Y.T                                                # (rank, V)
+    inv_S = np.where(S > eps, 1.0 / S, 0.0)
+    beta_ols = Vt.T @ (inv_S[:, None] * z)                       # (P, V)
+    beta_ols_norm = np.linalg.norm(beta_ols, axis=0) + eps       # (V,)
+
+    lam_max = max(float(S.max() ** 2) * 1e6, 1e6)
+    lam_grid = np.concatenate([[0.0],
+                                  np.logspace(-6, np.log10(lam_max),
+                                              n_grid - 1)]).astype(np.float32)
+
+    ratios = np.zeros((n_grid, Y.shape[0]), dtype=np.float32)
+    for k, lam in enumerate(lam_grid):
+        weights = (S / (S ** 2 + lam)).astype(np.float32)        # (rank,)
+        coef = weights[:, None] * z                              # (rank, V)
+        beta_lam_norm = np.linalg.norm(Vt.T @ coef, axis=0)      # (V,)
+        ratios[k] = beta_lam_norm / beta_ols_norm
+
+    # Find λ per voxel that minimizes |ratio - target_frac|.
+    diffs = np.abs(ratios - target_frac[None, :])
+    best_k = np.argmin(diffs, axis=0)                            # (V,)
+    best_lam = lam_grid[best_k].astype(np.float32)               # (V,)
+
+    weights_per_v = (S[:, None] / (S[:, None] ** 2 + best_lam[None, :])
+                      ).astype(np.float32)                        # (rank, V)
+    coef_per_v = weights_per_v * z
+    beta_frac = (Vt.T @ coef_per_v).T                            # (V, P)
+    return beta_frac.astype(np.float32)
+
+
 def _load_canonical_fracvalue_to_relmask(
     glmsingle_dir: Path = Path(
         "/data/derivatives/rtmindeye_paper/glmsingle/glmsingle_sub-005_ses-01-02_task-C"
@@ -426,11 +514,12 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
     globals()["_SESSION_RHO_TS"] = None
 
     # Pre-load training-derived per-voxel fracridge table for canonical_frac
-    # denoise (Stage 3 with FRACvalue frozen from a prior session)
+    # / canonical_real_frac denoise (Stage 3 with FRACvalue frozen from a
+    # prior session).
     canonical_frac = None
-    if denoise == "canonical_frac":
+    if denoise in ("canonical_frac", "canonical_real_frac"):
         canonical_frac = _load_canonical_fracvalue_to_relmask()
-        print(f"  [denoise=canonical_frac] loaded ses-01-02 FRACvalue, "
+        print(f"  [denoise={denoise}] loaded ses-01-02 FRACvalue, "
               f"mean={canonical_frac.mean():.3f} range "
               f"{canonical_frac.min():.3f}-{canonical_frac.max():.3f}")
 
@@ -590,7 +679,13 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
             else:
                 ts_use = ts
                 n_trs_use = n_trs
-            if hrf_strategy == "glmsingle_lib":
+            if hrf_strategy == "glmsingle_lib" and denoise == "canonical_real_frac":
+                # Stage 1 + Stage 3 (no AR(1)) — proper SVD-based fracridge
+                beta = _glm_glmsingle_per_voxel_hrf_real_fracridge(
+                    ts_use, onsets, trial_i, tr, n_trs_use,
+                    hrf_indices, hrf_library, base_time, canonical_frac,
+                )
+            elif hrf_strategy == "glmsingle_lib":
                 beta = _glm_glmsingle_per_voxel_hrf(
                     ts_use, onsets, trial_i, tr, n_trs_use,
                     hrf_indices, hrf_library, base_time, mode=mode,
@@ -726,6 +821,28 @@ CELLS = {
         dict(mode="ar1_freq", bold_source="fmriprep",
              hrf_strategy="glmsingle_lib",
              denoise="canonical_frac"),
+    # Real per-voxel SVD fracridge (Rokem & Kay 2020) — direction-changing
+    # ridge, not scalar shrinkage. Stage 1 (HRF library) + Stage 3 (real
+    # fracridge) approximation of canonical TYPED_FITHRF_GLMDENOISE_RR.
+    # Should approach canonical AUC 0.856 if the implementation is right.
+    "FullRun_S1S3realFRAC_rtm":
+        dict(mode="ols", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac"),
+    "FullRun_S1S3realFRAC_fmriprep":
+        dict(mode="ols", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac"),
+    "Streaming_S1S3realFRAC_pst8_rtm":
+        dict(mode="ols", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac",
+             streaming_post_stim_TRs=8),
+    "Streaming_S1S3realFRAC_pst8_fmriprep":
+        dict(mode="ols", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac",
+             streaming_post_stim_TRs=8),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 
