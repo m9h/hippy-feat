@@ -52,11 +52,22 @@ This doc is action-oriented. The analytical evidence behind every claim is in th
 | Top-1 image retrieval is the headline metric | For closed-loop deployment, **pairwise AUC** (same-image vs different-image β-distance) is the relevant metric. RT plateaus at AUC ≈ 0.826 by decode delay = 15; Offline reaches 0.886 with denoising. The 0.06 AUC delta is where the practical loss lives. |
 | AR(1) frequentist GLM is the right RT noise model | Variant G's Bayesian conjugate produces a per-trial posterior `(β_mean, β_var)` at the **same forward-pass cost** as AR(1) freq (1.6–4.8 ms/TR JIT'd). It enables confidence-gated selective accuracy of **84–90 % at τ = 0.9, covering 34–51 % of trials** — a regime AR(1) freq cannot produce because it has no posterior. |
 
-Concretely, three paper edits we would recommend:
+Concretely, four paper edits we would recommend:
 
 1. **Re-frame Figure 3** as a windowing-vs-causal-evidence-window comparison rather than a pipeline-feature comparison.
 2. **Be explicit about the subject-and-session-specific behavior of Stage 2 (GLMdenoise)**: the bootstrap-selected `pcnum` ranges 0–6 across the 9 published `.npz` outputs. For sub-005 ses-02 and ses-03 it's 0; for sub-001 ses-01 it's 6. RT-pipeline reimplementations should not treat GLMdenoise as a load-bearing default. Recommend reporting `pcnum` per anchor in the paper's pipeline-description section.
-3. **Add an AUC / confidence-aware evaluation** alongside top-1 to make the closed-loop deployment relevance explicit.
+3. **Add a pairwise AUC column to Table 1 alongside top-1 retrieval.** Top-1 inherits from Scotti 2023 / 2024 for continuity with prior MindEye papers, but it answers the question "did we identify the exact image" — appropriate for the *reconstruction* framing in §`Comparing Pipeline Variations`. The paper's *future-applications* framing (§`Towards Non-Invasive Brain-Computer Interfaces`) — neurofeedback to manipulate fine-grained representations, depression-attentional-bias correction — depends on **pairwise discriminability**, not 50-way identification. The closing argument and the reported metric should match. Concretely: report `same-image vs diff-image cosine-distance AUC + Cohen's d` for each row of Table 1. We've measured these directly on the published RT-betas anchors:
+
+   | Tier | Paper top-1 | Our AUC measurement (n=150) | Our d |
+   |---|---|---|---|
+   | End-of-run RT (`delay=63`) | 66% | **0.825** | 1.30 |
+   | Slow RT (`delay=20`) | 58% | **0.826** | 1.30 |
+   | Fast RT (`delay=5`) | 36% | **0.803** | 1.18 |
+   | Canonical Offline (`.npz`) | 76% | **0.856** | 1.48 |
+   | RT-deployable cell 7 (rtmotion + Glover + 5-PC noise PCs + AR(1)) | — | **0.886** | 1.71 |
+
+   The pairwise AUC compresses the dynamic range relative to top-1 — Fast→EoR is 36→66% on top-1 (+30 pp) but 0.80→0.83 on AUC (+0.03). On AUC the offline-vs-EoR gap is 0.03 (vs 10 pp on top-1). For the closed-loop deployment context the paper argues for, that AUC delta is the more relevant figure of merit and changes the interpretation: **a simple 5-PC noise regression on RT-deployable streaming AR(1) already exceeds the canonical Offline anchor on AUC**. That message gets lost in a top-1-only table.
+4. **Add an explicit confidence-aware evaluation track** — selective accuracy at confidence threshold τ — for the Variant-G-style pipelines where `(β_mean, β_var)` is available. Companion to AUC; turns the per-trial posterior into a deployment-relevant operating curve.
 
 ### What the cross-session inspection establishes
 
