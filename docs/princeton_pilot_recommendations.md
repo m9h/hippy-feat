@@ -103,22 +103,27 @@ Train the gate on a calibration session — fit a logistic classifier on `(β_me
 
 This is the change that **changes what the subject sees**. Preprocessing changes (the rest of this list) move accuracy metrics by 0.01–0.10 AUC; confidence gating changes the deployment paradigm.
 
-### 3. aCompCor with precomputed WM/CSF masks
+### 3. aCompCor with precomputed WM/CSF masks (deploy in the RT path)
 
-Pre-collected anat → tissue segmentation → 5-PC noise regression per TR. Expected **+~0.10 AUC** over plain AR(1). RT-deployable in two ways:
+The offline pipeline **already extracts aCompCor** in fmriprep (Appendix `fMRIPrep Preprocessing Details`):
 
-- **Slow but standard**: FreeSurfer aseg from a prior session (offline), reused on scan day.
-- **Same-day**: FastSurfer ~60 s GPU pass on the scan-day anat — gets the WM/CSF mask before the first functional run.
+> "For aCompCor, three probabilistic masks (CSF, WM and combined CSF+WM) are generated in anatomical space... Components are also calculated separately within the WM and CSF masks. For each CompCor decomposition, the *k* components with the largest singular values are retained, such that the retained components' time series are sufficient to explain 50 percent of variance across the nuisance mask."
 
-The relmask FAST PVE files (`T1_brain_seg_pve_{0,1,2}.nii.gz`) are already on disk. Important: pull the PCs from segmented WM/CSF, **not** from a high-variance pool inside the relmask. The independent K=10 EoR test on a relmask-pool noise basis was rejected (hurt by 6 pp) because relmask voxels are task-driven by construction. This is consistent with the canonical pipeline's bootstrap CV preferring K=0 on sub-005 ses-02/03 — the noise pool selected by the canonical `.npz` (`pcvoxels` and `noisepool` fields) is more anatomically restricted than a top-variance relmask pool, which is why GLMdenoise can be useful on other sessions but is the wrong default for RT.
+The recommendation here is to **deploy that same aCompCor regression in real time**, not to add a new acquisition. The tissue probability maps (`T1_brain_seg_pve_{0,1,2}.nii.gz` from FAST) are already on disk per session and the offline confounds tables already include aCompCor PCs.
 
-### 4. Fieldmap-based Susceptibility Distortion Correction (SDC) at scan start
+Operationally for RT: precompute the WM/CSF masks (~1 min) before the first task run, project them onto the streaming BOLD reference space, and at each TR regress the projected WM/CSF mean signal (or top-K PCs from a sliding window) out before fitting the GLM.
 
-SDC corrects EPI geometric distortion at air/tissue interfaces (orbitofrontal cortex, ventral temporal lobe, brainstem). fmriprep does it offline; RT pipelines typically don't.
+Expected gain: this is what gives our cell 7 its **+0.10 AUC** over plain AR(1) (relmask top-variance noise pool, 5 PCs, fully streaming). On sub-005 ses-03 our 5-PC noise regression already exceeds canonical Offline AUC (0.886 vs 0.856). The independent K=10 EoR test on the relmask-pool noise basis was rejected (hurt by 6 pp top-1) because at full-run K=10 the top-variance voxels include task signal — the WM/CSF-restricted aCompCor pool avoids that failure mode by construction.
 
-Operationally: a ~2-minute fieldmap acquisition at scan start → compute the per-voxel warp during the structural pre-scan setup (a few minutes, before the first task run) → apply per TR via `fsl applywarp` (~50 ms/TR, well within the TR budget).
+### 4. Deploy fieldmap-based SDC in the real-time path
 
-For RT-MindEye-style visual-cortex retrieval the payoff is bounded (~1–3 pp top-1) because visual cortex is not a high-distortion region. But it's free signal once the fieldmap is collected — and it's the only fmriprep stage strictly absent from the RT pipeline.
+The paper **already collects fieldmaps** in every scan session (Appendix `appendix-mri-acq`: "two spin-echo field map volumes, TR = 8000 ms, TE = 66 ms, in opposite phase encoding directions for fieldmap correction"). fmriprep uses them via `topup` for the offline pipeline; the RT pipeline currently doesn't.
+
+The data is already there — the recommendation is to **apply SDC in the streaming path**: precompute the per-voxel warp from the existing fieldmap during the structural pre-scan setup (a few minutes, before the first task run), then apply per TR via `fsl applywarp` (~50 ms/TR, well within the TR budget).
+
+For RT-MindEye-style visual-cortex retrieval the payoff is bounded — visual cortex is not a high-distortion region. Our measurement: at constant Glover + 5-PC noise regression + AR(1), fmriprep BOLD vs rtmotion BOLD differs by **−0.005 AUC** (cells B12/13 vs B3/B6). That ≤ 0.005 figure is the *joint* contribution of all of fmriprep's offline-only steps (SDC + slice-timing + better head-motion correction + 24-vs-6 confounds + CompCor) — so any single one of them, including SDC, is at the noise floor for this task and ROI.
+
+**Net**: free to add (data is collected, latency is fine), but don't expect a meaningful AUC bump on visual-cortex retrieval.
 
 ### 5. Don't apply fracridge as a post-hoc wrapper — and don't try to recreate canonical Stage 3 under streaming
 
@@ -156,7 +161,7 @@ To resolve the questions our analysis can't fully close from the existing data:
 | Save VG posterior `(β_mean, β_var)` alongside the decoded class | Post-hoc selective-accuracy curves; A/B against an AR(1)-freq baseline at no per-trial cost |
 | Save MCFLIRT motion `.par` files **per run** | Currently overwritten — only run-01 survives in `motion_corrected/` after a typical session runs. Saving per-run `.par` enables proper motion-confound replication and FD/DVARS censoring |
 | A/B per-voxel HRF library vs Glover canonical (alternating runs or alternating subjects) | Settles whether GLMsingle Stage 1 is RT-deployable. Our measurement is mixed — library hurts top-1 (45 % vs 62 %) but mostly preserves AUC (0.755). Whether it's a net win depends on which metric drives the experiment |
-| Pre-collect anat **and** fieldmap before pilot day for every subject | Enables aCompCor (item 3) and SDC (item 4) without per-subject calibration delay on scan day |
+| Acquire anat **and** fieldmap for every pilot subject (already standard per `appendix-mri-acq` — just needs to be ensured for any new subjects) | Enables aCompCor (item 3) and SDC (item 4) RT deployment without per-subject calibration delay on scan day |
 
 The instrumentation cost for all four is small relative to the pilot's existing logging — just additional `.npy` / `.tsv` files per run.
 

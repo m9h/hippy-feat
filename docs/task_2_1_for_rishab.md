@@ -13,6 +13,29 @@ gap, and how does the gap shift when scored on the closed-loop-relevant
 pairwise AUC metric? Adjacent: how do the Slow RT (58%) and Fast RT
 (36%) tiers fit the same decomposition?
 
+**Grounding in the paper's Discussion (`results:3t-delay-vs-performance`)**:
+
+> "There is a positive relationship between stimulus delay (i.e., how long
+> we wait before starting to analyze the response to a stimulus) and decoding
+> performance, implying that collecting additional data before fitting the
+> GLM improves the quality of the response estimates. This relationship
+> peaks early with an elbow at roughly 30 seconds before diminishing returns,
+> which suggests that this may be an optimal trade-off point between speed
+> and accuracy."
+
+> (Discussion §`Real-time vs. Offline Performance`) "Our results reveal that
+> averaging responses over multiple repetitions of the same image and
+> acquiring more data prior to response estimation are the two most
+> important factors supporting decoding performance."
+
+> "The performance gap between the offline and end-of-run pipelines suggests
+> that the inclusion of extensive preprocessing steps such as fMRIPrep and
+> GLMsingle is beneficial, but not essential, for single-trial decoding."
+
+This decomposition (windowing dominant; preprocessing pipeline beneficial-
+but-not-essential) is the framing our experiments operationalize, with the
+addition of the closed-loop-relevant pairwise AUC metric.
+
 **Headline answers**:
 
 1. The top-1 gap is **β-windowing** — RT's per-trial GLM fits on BOLD
@@ -283,10 +306,18 @@ across all trials without restructuring as a non-causal session-end fit.
 4. **Per-voxel HRF index file** (`avg_hrfs_s1_s2_full.npy`) was
    derived from sessions 1+2. Did you regenerate it for the sub-001
    sub-002 etc cohort, or is it fixed per subject from training?
-5. **The pst sweep saturation at delay≈15-20** in your saved RT betas
-   matches an HRF + small-trailing-window decode. Is the operational
-   choice in the experiment delay = some fixed value, or did each
-   trial decode at variable delay depending on the next stim onset?
+5. **TR-shift mechanism** (Appendix `tr-labels`): "Prior to the start of
+   the session, we assign an image label to each TR, shifted by ~7.9 s
+   post stimulus onset (for the 'fast' real-time variation)... Varying
+   the stimulus delay (e.g., between fast, slow, and end-of-run
+   variations) therefore involves simply shifting these TR labels."
+   This confirms the `delay` parameter on your saved
+   `all_betas_ses-03_all_runs_delay{N}.npy` is the TR-shift count.
+   Mapping: `delay=5` → Fast (~7.9 s), `delay=20` → Slow (~30 s),
+   `delay=63` → End-of-run. **Our independent scoring of
+   `delay=20` lands at 59.3% top-1 vs your reported 58% Slow RT —
+   within 1.3 pp**. Confirms the retrieval pipeline is matching yours
+   closely; we're scoring against the same checkpoint and protocol.
 6. **Decoder fine-tuning on fracridge βs**: our re-implementation that
    wraps fracridge around OLS βs (rather than fitting GLMsingle
    end-to-end) catastrophically fails. We attribute this to (a)
