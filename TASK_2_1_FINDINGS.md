@@ -125,6 +125,37 @@ not Task 2.1 evidence.
    point-estimate metric on a method whose contribution is the
    posterior. This belongs in a separate writeup, not Task 2.1.
 
+## 2026-05-02 update — paper-confirmed checkpoint (fold 10) closes most of the gap
+
+Per Rishab (Discord), the actual checkpoint that produced Table 1 is
+`sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_**10**_avgrepeats_finalmask_epochs_150/last.pth`
+(fold **10** + epochs_150 suffix), available on `macandro96/mindeye_offline_ckpts`
+on HF. **We had been using fold 0** (`..._3split_0_avgrepeats_finalmask.pth`),
+which is a different fold of the same single-session ses-01 fine-tune.
+
+Rescored with fold-10 ckpt:
+
+| Tier | Paper Table 1 | fold-10 first-rep | fold-0 first-rep | Δ |
+|---|---|---|---|---|
+| **Offline 3T (avg 3 reps)** | **90%** | **88%** ← within 2 pp | 74% | ckpt closes 14 pp |
+| **End-of-run RT** | **66%** | **64%** ← within 2 pp | 58% | ckpt closes 6 pp |
+| Slow RT | 58% | 66% (+8 pp **above** paper) | 58% | overshoot |
+| Offline 3T (single first-rep) | 76% | 62% (still −14 pp) | 56% | partial |
+
+The rep-avg gap is now **closed** to within sampling variance (88% vs
+90%). EoR-RT first-rep also matches within 2 pp. **First-rep Offline
+still has a 14 pp residual gap and Slow first-rep now overshoots paper
+by 8 pp** — these two anomalies suggest some additional drift between
+our scoring of the paper's saved RT betas and how paper itself scored
+them on Slow-tier data, or scoring-policy detail in single-trial
+first-rep evaluation that we haven't replicated.
+
+**For paper resubmission**: rep-avg metrics are reproducible from
+canonical inputs + fold-10 ckpt. Single-trial first-rep needs one more
+clarification from the paper team about the exact scoring path.
+
+See `docs/table1_reproducibility_recipe.md` for the per-row recipe.
+
 ## Cross-references
 
 - Pre-registration: `TASK_2_1_PREREGISTRATION.md` (2026-04-27 lock)
