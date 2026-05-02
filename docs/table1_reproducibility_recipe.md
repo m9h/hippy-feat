@@ -67,7 +67,7 @@ Same as above through step 5; then:
 6. Filter trials to **first occurrence per special515 image** (50 trials)
 7-8. Same forward pass + retrieval
 
-### End-of-run RT → 66% top-1
+### End-of-run RT → 66% top-1 (corresponds to `delay=63` in saved RT betas)
 
 1. rtmotion BOLD: per-TR FSL MCFLIRT against run-01-vol-0, then `applywarp` cross-session
 2. Per-trial nilearn LSS at end of run: fit `FirstLevelModel(t_r=1.5, slice_time_ref=0, hrf_model='glover', drift_model='cosine', drift_order=1, high_pass=0.01, noise_model='ar1', signal_scaling=False)`, with `mc_params` (6 motion regressors from MCFLIRT) as confounds. Probe = current trial; reference = all other trials in the same run.
@@ -75,13 +75,44 @@ Same as above through step 5; then:
 4. Filter to first-rep special515 (50 trials)
 5. Same forward pass + retrieval
 
-### Slow RT → 58% top-1
+### Slow RT → 58% top-1 (corresponds to `delay=5` in saved RT betas)
 
-Same as End-of-run RT but step 2 fits LSS on BOLD cropped to `imgs[:onset_TR + ~20]` (i.e., ~30 s of BOLD post stimulus, not the full run). Specifically: at each non-blank TR `t`, the GLM is fit using `imgs[:t+1]` and `events[onset <= t*tr]` per Rishab's notebook cell 19. Decode happens after a fixed delay; for "Slow" the delay is ~30 s.
+Same as End-of-run RT but the per-trial GLM fits BOLD only up to **~30 s after each trial's stim onset**. Per-trial windowing: at each non-blank TR `t`, the GLM is fit using `imgs[:t+1]` and `events[onset <= t*tr]` per Rishab's notebook cell 19.
 
-### Fast RT → 36% top-1
+### Fast RT → 36% top-1 (corresponds to `delay=0` in saved RT betas — the default)
 
-Same as Slow RT but window is ~8 s (~5 TRs) post stimulus. Same per-TR LSS, just earlier decode point.
+Same as Slow RT but the per-trial GLM fits BOLD only up to **~7.5–7.9 s after stim onset** (HRF peak — the minimum useful window). This is the **default** delay in the paper RT pipeline.
+
+### How the `delay` parameter actually works (per Rishab's clarification)
+
+The `delay=N` parameter on the saved `all_betas_ses-03_all_runs_delay{N}.npy` files is **N TRIALS** (NOT N TRs and NOT N seconds — this isn't documented in the paper text and is the single most confusing convention).
+
+- **delay=0 = "default" = ~7.5 s post-stim of *current* trial**. This is the Fast RT point — fit GLM as soon as the HRF peaks for the current trial.
+- **delay=N = "wait N more trials before fitting"**. Each trial is 4 s (3 s stim + 1 s ISI), so the GLM is fit at `7.5 + 4N` seconds after the current trial's stim onset.
+- **delay=63 = "wait until last trial of the 63-trial run" = End-of-Run**. Every trial in the run gets near-full-run BOLD evidence by the time it's decoded at `delay=63`.
+
+Conversion to TR units (TR=1.5 s):
+
+| `delay` (trials) | post-stim s | post-stim TRs | maps to |
+|---|---|---|---|
+| 0 | 7.5 | 5 | Fast RT (default) |
+| 1 | 11.5 | ~8 | (intermediate) |
+| 3 | 19.5 | ~13 | (intermediate) |
+| 5 | 27.5 | ~18 | **Slow RT** (paper Table 2: 29.5 ± 2.6 s) |
+| 10 | 47.5 | ~32 | (intermediate) |
+| 15 | 67.5 | ~45 | (intermediate) |
+| 20 | 87.5 | ~58 | (intermediate) |
+| 63 | 259.5 (or capped at run end) | ~190 capped | **End-of-Run RT** |
+
+For trial `i` decoded at delay=N:
+
+```
+decode_TR_for_trial_i = onset_TR_{i+N} + ~5 TRs  (HRF peak of the future trial we wait for)
+GLM fit on:  BOLD[0 : decode_TR_for_trial_i + 1]
+events:      events[onset <= decode_TR_for_trial_i * 1.5s]
+```
+
+That's why the End-of-run row in Table 2 has stim-delay σ=80 s: at delay=63 the wait is calendar-fixed to the last trial, so trial 0 in a run gets ~250 s of post-stim wait while trial 62 gets only ~5 s, averaging ~130 s.
 
 ### Offline NSD / Offline NSD (avg 3 reps) → 78% / 100% top-1
 
@@ -97,6 +128,8 @@ Same MindEye2 architecture, fine-tuned on NSD 7T subj01 (one session of NSD data
 6. **5-seed averaging is a Table 1 caption convention, NOT a Scotti 2023/2024 inheritance** — the original MindEye papers don't explicitly average over diffusion seeds. This is per Iyer paper Table 1: "Reconstruction metrics are averaged over 5 random seeds; retrieval is deterministic."
 7. **Retrieval is deterministic.** Both predicted CLIP voxels and GT image embeddings are computed once; cosine similarity → argmax has no random component.
 8. **The "first-rep" filter** picks the first occurrence (in TR order across runs) of each unique special515 image. We verified ses-03 contains exactly 50 unique special515 images, so first-rep = 50 trials.
+9. **`delay` parameter is in TRIALS, not TRs and not seconds.** Per Rishab's clarification (paper text doesn't document this): delay=0 is the "default" = ~7.5 s post-stim (HRF peak); delay=N waits N more trials × 4 s/trial; delay=63 = end-of-63-trial-run. Mapping: delay=0 → Fast, delay=5 → Slow (≈30 s post-stim), delay=63 → End-of-run. This is the single most confusing convention in the paper-deployed pipeline and is worth clarifying in the resubmission.
+10. **"Resampling" has two meanings** in this codebase. The paper mindeye.py FLIRT-cross-session-aligns each TR to fmriprep's boldref, producing files in `motion_corrected_resampled/` — that's *registration*, not spatial-resolution resampling. Rishab's "resampling" in the Discord clarification refers to *spatial* interpolation to a different voxel grid (e.g., MNI 2 mm vs 1 mm), which is a separate, optional step that doesn't apply to the Table 1 simulation.
 
 ## Cross-references
 
