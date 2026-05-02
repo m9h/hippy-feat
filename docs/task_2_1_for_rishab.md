@@ -3,6 +3,10 @@
 **Audience**: Rishab Iyer (RT-MindEye paper). Self-contained — no
 prior context about our codebase needed.
 
+**Glossary**: see `docs/glossary.md` for definitions of top-1, top-5,
+AUC, Cohen's d, LSS/LSR, pst, cum-z, pcnum, FRACvalue, finalmask,
+Variant G, and all other recurring jargon in this doc.
+
 **Question (paper Figure 3)**: when both pipelines have processed all 770
 trials of sub-005 ses-03, what mechanism produces the offline-vs-RT
 top-1 retrieval gap (≈ 76% vs 66% paper-reported), and how does the

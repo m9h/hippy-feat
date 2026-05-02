@@ -2,6 +2,7 @@
 
 **Audience**: Rishab Iyer + the team running the current RT-MindEye pilot.
 **Companion**: `docs/task_2_1_for_rishab.md` (full factorial decomposition + supporting numbers).
+**Glossary**: `docs/glossary.md` covers all recurring jargon (top-1, AUC, LSS, pst, fracridge, Variant G, etc.) — keep it open in a side tab.
 
 This doc is action-oriented. The analytical evidence behind every claim is in the companion doc. Three sections:
 
