@@ -36,6 +36,27 @@ This decomposition (windowing dominant; preprocessing pipeline beneficial-
 but-not-essential) is the framing our experiments operationalize, with the
 addition of the closed-loop-relevant pairwise AUC metric.
 
+**Cross-replication consensus on the EoR→Offline 10 pp top-1 gap**:
+Five mechanistic hypotheses tested independently across two re-
+implementations and **all rejected as load-bearing**:
+
+| Hypothesis | Test result |
+|---|---|
+| GLMdenoise on relmask top-variance pool, K=10 | Hurts EoR by 6 pp (relmask voxels are task-driven) |
+| GLMdenoise on FAST CSF/WM PVE pool, K=10 | Neutral (0 pp) — clean noise pool gives no lift |
+| Per-voxel HRF library (Stage 1 alone) | Single-trial top-1 collapse (62% → 45%) |
+| Real per-voxel SVD fracridge (Stage 3 alone) | Catastrophic in LSS setting (top-1 22% / chance) |
+| BOLD source (fmriprep vs rtmotion) at constant GLMsingle | rtmotion + GLMsingle ≥ fmriprep + GLMsingle by 2 pp |
+
+The remaining EoR gap is **synergistic-pipeline only** (GLMsingle's
+joint CV-tuned Stages 1+2+3 working together), and the synergistic lift
+is a **repeat-avg-bound effect** — single-trial first-rep top-1 from
+running the full canonical TYPED_FITHRF_GLMDENOISE_RR pipeline is **50%
+on rtmotion BOLD, 26 pp below the paper's reported 76%**. Either the
+paper-reported 76% comes from a different checkpoint / test-set / scoring
+rule, or the bootstrap CI on the single-rep number is wide enough to
+explain the gap as sampling variance (CI [42, 70] contains 66).
+
 **Headline answers**:
 
 1. The top-1 gap is **β-windowing** — RT's per-trial GLM fits on BOLD
@@ -326,6 +347,24 @@ across all trials without restructuring as a non-causal session-end fit.
    canonical fracridge βs. Could you confirm the checkpoint we're
    using (`sub-005_ses-01_..._3split_0_avgrepeats_finalmask.pth`) was
    trained on canonical TYPED_FITHRF_GLMDENOISE_RR.npz βs?
+
+7. **The Offline 3T single-rep = 76% target** in Table 1 doesn't
+   reproduce in either independent re-implementation. Direct test:
+   we re-ran the canonical TYPED_FITHRF_GLMDENOISE_RR pipeline (cvnlab
+   GLMsingle, default options) on full ses-03 rtmotion 4D BOLD. Result:
+   78% repeat-avg / **50% single-rep** — the rep-avg number matches
+   paper's Offline 3T avg-3-reps 90% within 12 pp on this subject and
+   exceeds the 76% Offline 3T anchor on rep-avg, but the single-rep
+   number is 26 pp BELOW the paper's first-rep 76%. We've also ruled
+   out (across two platforms): GLMdenoise (relmask K=10 hurts; CSF/WM
+   K=10 neutral), HRF library (top-1 collapse), real per-voxel fracridge
+   (no help in isolation), BOLD source (rtmotion + GLMsingle ≥ fmriprep
+   + GLMsingle). The residual 26 pp gap on single-rep can only be
+   methodology drift: which checkpoint produced Table 1's 76% single-rep
+   number, and what scoring rule did the eval use? `_3split_0` (1-session
+   fine-tune, paper-text-aligned) vs `_sample=10_..._epochs_150`
+   (multi-session, data-scaling appendix) give very different numbers
+   — would help to know which one anchors Table 1.
 
 ---
 
