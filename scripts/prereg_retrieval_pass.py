@@ -192,12 +192,26 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     hits1 = top1 == trial_idx
     hits5 = np.array([trial_idx[i] in top5[i] for i in range(len(sim))])
 
+    # First-rep-only mask (50 trials max) — matches Iyer et al. ICML 2026
+    # Table 1 default eval ("single-trial betas from the first presentation
+    # of the three repeats only"). For cells 11/12 / repeatavg etc. where
+    # ids are already unique-per-image, every trial is a "first rep".
+    seen = set()
+    first_rep_mask = np.zeros(len(test_ids), dtype=bool)
+    for i, name in enumerate(test_ids):
+        if name not in seen:
+            first_rep_mask[i] = True
+            seen.add(name)
+
     return {
         "cell": cell,
         "n_test_trials": int(test_betas.shape[0]),
         "n_unique_test_images": int(len(np.unique(trial_idx))),
         "top1_image": float(hits1.mean()),
         "top5_image": float(hits5.mean()),
+        "n_first_rep": int(first_rep_mask.sum()),
+        "top1_image_first_rep": float(hits1[first_rep_mask].mean()),
+        "top5_image_first_rep": float(hits5[first_rep_mask].mean()),
     }
 
 
@@ -236,9 +250,11 @@ def main():
         if "error" in r:
             print(f"  {cell:<46}  ERROR: {r['error']}", flush=True)
         else:
+            fr = (f"top1_fr={r.get('top1_image_first_rep', 0.0):.3f} "
+                  f"(n={r.get('n_first_rep', 0)})") if 'top1_image_first_rep' in r else ""
             print(f"  {cell:<46}  n={r['n_test_trials']:<4}  "
                   f"top1={r['top1_image']:.3f}  top5={r['top5_image']:.3f}  "
-                  f"({r['elapsed_s']:.1f}s)", flush=True)
+                  f"{fr}  ({r['elapsed_s']:.1f}s)", flush=True)
 
     OUT_JSON.write_text(json.dumps(results, indent=2))
     print(f"\nWrote {OUT_JSON}", flush=True)
