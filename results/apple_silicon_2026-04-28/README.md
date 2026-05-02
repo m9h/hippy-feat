@@ -1139,3 +1139,62 @@ Runtime: **128.4 min** on M5 Max (slower than canonical Princeton's reported run
 - `drivers/run_glmsingle_rtmotion.py` — runs canonical GLMsingle on rtmotion 4D BOLD, full session (~2h on M5 Max)
 - `drivers/score_glmsingle_rtmotion.py` — scores both single-rep and repeat-avg modes from the dict-format `.npy` output
 - New cells: `RTmotion_GLMsingle_singleRep` (50%) and `RTmotion_GLMsingle_repAvg` (78%)
+
+## Update 2026-05-01 (round 5): z-policy methodology audit per paper main.tex §2.5.1
+
+The DGX agent's commit `b1a19ea` flagged a methodology split between our scorers (some used non-causal session-z, others used causal cum-z). We pulled the draft ICML paper at `~/Downloads/rt_mindeye_paper/main.tex` and identified the paper's exact z-score policy by tier.
+
+### Paper's z-score policies (read directly from main.tex)
+
+**§2.5.1 Offline (line 212):**
+> "Betas were z-scored voxelwise using the **training images from the entire session**."
+
+**§2.5.2 Real-time (line 217):**
+> "Voxelwise betas are **z-scored cumulatively as the session progresses**."
+
+So the paper specifies **two different z-policies by tier**:
+- **Offline anchor (76%):** session-wide, training-images-only stats (NOT all 693 trials — excludes the 50 special515 test reps)
+- **RT (Fast/Slow/EoR):** cumulative causal (past-only)
+
+### Z-policy × retrieval-mode matrix on existing GLMsingle outputs
+
+Three z-policies tested on both canonical fmriprep+GLMsingle (.npz) and rtmotion+GLMsingle (.npy from Round 4):
+
+**Canonical fmriprep + GLMsingle** (paper anchors: 76% 1st-rep, 90% avg-3-rep)
+
+| z policy | first-rep top-1 | repeat-avg top-1 |
+|---|---|---|
+| `session_all` (LEAKY — includes special515 in stats) | 62% | 76% |
+| **`session_train` (paper §2.5.1)** | **60%** | **76%** |
+| `causal_cumz` (RT §2.5.2 style; conservative) | 56% | 78% |
+
+**rtmotion + GLMsingle** (cf same anchors — apples-to-apples)
+
+| z policy | first-rep top-1 | repeat-avg top-1 |
+|---|---|---|
+| `session_all` | 50% | 78% |
+| `session_train` | 52% | 76% |
+| `causal_cumz` | 54% | 76% |
+
+### Key conclusions
+
+1. **The paper-correct training-only z policy gives nearly identical numbers to leaky session-z** — 60% vs 62% first-rep on canonical, 76% in both modes for rep-avg. The expected ~8-10pp inflation from session-z leakage simply doesn't materialize because special515 is only ~22% of the 693 trials, so excluding them barely shifts the pooled stats.
+
+2. **Our earlier 76% Offline reproduction was rep-avg + session_all** — numerically matched paper's 76% **first-rep** claim only by coincidence. Reading by mode, paper's 76% is a first-rep number; our 76% reproduction was repeat-avg. Different cells, same number.
+
+3. **The paper's 76% Offline first-rep cannot be reproduced from canonical fmriprep+GLMsingle with our ses-01-only checkpoint regardless of z-policy.** Best we get is 60% (−16pp). Combined with DGX agent's `daf7bb1` finding that sample=10 ckpt gets 68% first-rep (−8pp), the residual gap is checkpoint-driven, not z-policy-driven.
+
+4. **Causal cum-z is competitive on rep-avg.** On canonical fmriprep + rep-avg, causal cum-z gives 78% (best of the three policies). Methodology-wise we don't lose anything by going fully causal.
+
+5. **BOLD source effect on first-rep is now visible**: 50-54% rtmotion vs 56-62% fmriprep (4-10pp delta), but on rep-avg the two BOLD sources are within 0-2pp. The earlier "BOLD source contributes ≤2pp" was specifically the rep-avg conclusion; first-rep does see slightly more BOLD-source sensitivity.
+
+### Implication for our prior local results
+
+Our prior `RT_paper_*_inclz` cells (Fast/Slow/EoR) used inclusive causal cum-z, which IS the paper-correct policy for RT tiers per §2.5.2. Those numbers stand without correction.
+
+Our prior canonical/rtmotion GLMsingle scorers used `session_all` (leaky); switching to paper-correct `session_train` shifts numbers by ≤2pp. Documented but not load-bearing.
+
+### Files added in this update
+
+- `drivers/score_z_policy_matrix.py` — implements all 3 z-policies × first-rep/rep-avg, scores both canonical and rtmotion betas
+- `z_policy_matrix.json` — full matrix saved (12 cells)
