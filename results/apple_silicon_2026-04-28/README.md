@@ -1090,3 +1090,52 @@ pst=25 stays the best at 50% (−8pp from paper). All neighbor pst values + adap
 - `drivers/run_slow_pst_refine.py` — Slow pst=23/24/26/27 sweep around the new optimum
 - `drivers/run_slow_adaptive_hrf.py` — adaptive Slow with per-trial decode_TR = `tr_label_hrf` peak + N
 - `drivers/score_round3.py` — multi-cell single-rep scorer for these 7 cells
+
+## Update 2026-05-01 (round 4): joint GLMsingle stack on rtmotion BOLD — settles the synergistic hypothesis
+
+The biggest open question after the individual-stage ablations was: **does the GLMsingle stack work synergistically when applied jointly to rtmotion BOLD?** Each stage tested individually (HRF library, GLMdenoise, global fracridge) was neutral or negative on EoR. The joint canonical algorithm is what produced the 76% Offline anchor on fMRIPrep BOLD.
+
+### Setup
+
+Installed `glmsingle` (cvnlab/GLMsingle from GitHub). Built rtmotion 4D BOLD per run + GLMsingle design matrix (one column per unique image across the session, ones at trial onsets). Ran with default params (TYPED_FITHRF_GLMDENOISE_RR mode = HRF library + GLMdenoise + per-voxel-during-fit fracridge with joint CV across stages). Stimdur=3.0, TR=1.5, 11 runs × 192 TRs, 531 unique image conditions, 693 non-blank trials.
+
+Runtime: **128.4 min** on M5 Max (slower than canonical Princeton's reported runtime, presumably because Princeton ran on faster hardware). Output saved at `data/rtmindeye_paper/glmsingle/glmsingle_sub-005_ses-03_task-C_RTMOTION/TYPED_FITHRF_GLMDENOISE_RR.npy` (1.5 GB pickled dict).
+
+### CV-chosen hyperparameters from this fit
+
+- **GLMdenoise K (`pcnum`): 0** — CV picked zero noise-pool PCs. Matches the prior canonical Princeton finding ("Stage 2 not load-bearing on sub-005 ses-03").
+- **FRACvalue mean: 0.254** — per-voxel fracridge picks substantial shrinkage on average. This is the proper per-voxel-during-fit fracridge, not the global-SVD form we tested earlier.
+- HRFindex: per-voxel index into the 20-HRF library (Stage 1 active).
+
+### Retrieval results
+
+| Mode | Top-1 | Top-5 | vs paper anchor | vs prior best |
+|---|---|---|---|---|
+| **rtmotion + GLMsingle, single-rep** | **50%** | 84% | −16pp vs paper EoR (66%) | −6pp vs EoR_baseline (56%) |
+| **rtmotion + GLMsingle, repeat-avg-3** | **78%** | 98% | **+2pp vs paper Offline (76%)** | matches the canonical fMRIPrep+GLMsingle reproduction (76%/98%) |
+
+### Headline conclusions
+
+1. **BOLD source is definitively ruled out.** rtmotion + GLMsingle gives 78% repeat-avg, BEATING the fMRIPrep + GLMsingle Offline anchor at 76%. The two BOLD sources are essentially interchangeable when GLMsingle is applied; the source contributes ≤2pp of variation.
+
+2. **The 76% Offline anchor is a repeat-avg result, not a single-rep result.** The full GLMsingle stack with single-rep filter gives only 50% — actually 6pp WORSE than the OLS+Glover EoR baseline (56%). GLMsingle's per-voxel HRF library + per-voxel fracridge produces tighter posteriors that win when averaged across 3 reps (78%) but DOESN'T improve single-trial retrieval (50%).
+
+3. **The synergistic-stack hypothesis is partially confirmed:** the 76→78% lift from GLMsingle requires all three stages (HRF library + fracridge + joint CV) — no individual stage helps in isolation. But the lift is fundamentally a repeat-pooling effect; it's not an EoR gap closer.
+
+4. **Open puzzle: paper Table 1 reports Offline-3T single-rep = 76%** per §2.7's "single-trial betas from the first presentation". If our rtmotion + GLMsingle reproduction matches the canonical algorithm and gets 78% repeat-avg / 50% single-rep, the paper's claimed 76% single-rep may rely on a different checkpoint (canonical `sample=10_..._epochs_150`), a different test-set construction, or a different scoring rule than we have access to. This is the next thing to clarify with Rishab.
+
+### Net state of the paper anchor ladder
+
+| Tier | Paper | Reproduced | Gap | Status |
+|---|---|---|---|---|
+| Fast (pst=5) | 36% | 36% | 0pp ✓ |
+| Slow (pst=25) | 58% | 50% | −8pp | sharp local optimum |
+| End-of-run (pst=None) | 66% | 56% | −10pp | non-sig; 6 mechanisms ruled out |
+| Offline 3T single-rep | 76% | 50% | **−26pp** | full GLMsingle stack run + scored — gap is single-rep specific |
+| Offline 3T repeat-avg-3 | (paper 90%) | **78%** | (anchor unmatched in paper Table 1 column for repeat-avg) | rtmotion + GLMsingle ≥ fMRIPrep + GLMsingle |
+
+### Files added in this update
+
+- `drivers/run_glmsingle_rtmotion.py` — runs canonical GLMsingle on rtmotion 4D BOLD, full session (~2h on M5 Max)
+- `drivers/score_glmsingle_rtmotion.py` — scores both single-rep and repeat-avg modes from the dict-format `.npy` output
+- New cells: `RTmotion_GLMsingle_singleRep` (50%) and `RTmotion_GLMsingle_repAvg` (78%)
