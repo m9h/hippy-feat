@@ -7,10 +7,11 @@ prior context about our codebase needed.
 AUC, Cohen's d, LSS/LSR, pst, cum-z, pcnum, FRACvalue, finalmask,
 Variant G, and all other recurring jargon in this doc.
 
-**Question (paper Figure 3)**: when both pipelines have processed all 770
-trials of sub-005 ses-03, what mechanism produces the offline-vs-RT
-top-1 retrieval gap (≈ 76% vs 66% paper-reported), and how does the
-gap shift when scored on the closed-loop-relevant pairwise AUC metric?
+**Question (paper Table 1, single-trial first-rep n=50)**: what
+mechanism produces the **Offline 3T 76% vs End-of-run RT 66%** top-1
+gap, and how does the gap shift when scored on the closed-loop-relevant
+pairwise AUC metric? Adjacent: how do the Slow RT (58%) and Fast RT
+(36%) tiers fit the same decomposition?
 
 **Headline answers**:
 

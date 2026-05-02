@@ -184,6 +184,29 @@ to fmriprep's T1w-aligned reference. Available in real time.
 
 ---
 
+## Paper latency tiers (Iyer et al. ICML 2026 Table 1)
+
+The paper distinguishes **four** decode-latency operating points on the
+same MindEye2 architecture, all on n=50 single-trial first-rep eval:
+
+| Tier | Latency | Paper top-1 | Maps to our `Paper_RT_actual_delay` |
+|---|---|---|---|
+| Offline 3T (avg 3 reps) | 1 day | **90%** | — (offline post-processing tier) |
+| Offline 3T | 1 day | **76%** | Canonical `.npz` (n=50 first-rep) |
+| End-of-run RT | 2.7 min | **66%** | `delay=63` |
+| Slow RT | 36 s | **58%** | `delay=20` (we measure 59.3% — within 1.3 pp) |
+| Fast RT | 14.5 s | **36%** | `delay=5` |
+
+**Stimulus delay** in this taxonomy = wall-clock seconds elapsed after
+stimulus onset before the GLM is fit. ~7.9 s = ~5 TRs at TR = 1.5 s.
+
+The "10 pp gap" the Discussion focuses on is **Offline 3T 76% − End-of-Run RT 66%**.
+Both have all the within-run BOLD; the difference is
+fmriprep + GLMsingle vs rtmotion + nilearn AR(1) LSS at constant
+within-run data availability.
+
+---
+
 ## Stimuli, trials, sessions
 
 **special515**
