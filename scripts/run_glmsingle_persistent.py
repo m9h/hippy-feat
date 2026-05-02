@@ -66,25 +66,47 @@ def load_fmriprep_4d(run: int) -> np.ndarray:
     return nib.load(p).get_fdata().astype(np.float32)
 
 
-def build_design_matrix(run: int, n_trs: int, n_total_trials: int,
-                         trial_offset: int) -> tuple[np.ndarray, list[str]]:
-    """Per-run design matrix: each non-blank trial gets its own column,
-    one-hot at the onset TR. GLMsingle then produces one β per column."""
+def build_global_image_index() -> tuple[dict[str, int], list[str]]:
+    """One column per unique image across the full session — required for
+    GLMsingle Stages 2 + 3 cross-validation across reps."""
+    seen: list[str] = []
+    idx: dict[str, int] = {}
+    for run in range(1, 12):
+        events = pd.read_csv(
+            EVENTS_DIR / f"sub-005_{SESSION}_task-C_run-{run:02d}_events.tsv",
+            sep="\t",
+        )
+        events = events[events["image_name"] != "blank.jpg"]
+        for img in events["image_name"].astype(str).tolist():
+            if img not in idx:
+                idx[img] = len(seen)
+                seen.append(img)
+    return idx, seen
+
+
+def build_design_matrix_condition_mode(run: int, n_trs: int,
+                                         image_index: dict[str, int]
+                                         ) -> tuple[np.ndarray, list[tuple[int, str]]]:
+    """Condition-mode design: one column per unique image (across the
+    whole session), multiple ones per column for repeated images. Returns
+    (design (T, n_unique_images), per-trial (col_index, image_name) list).
+    """
     events = pd.read_csv(EVENTS_DIR / f"sub-005_{SESSION}_task-C_run-{run:02d}_events.tsv",
                           sep="\t")
     events = events[events["image_name"] != "blank.jpg"].reset_index(drop=True)
-    onsets = events["onset"].astype(float).values
-    onsets -= onsets[0]                                              # 0-relative
+    onsets = np.asarray(events["onset"].astype(float).values, dtype=np.float64).copy()
+    onsets -= onsets[0]
     images = events["image_name"].astype(str).tolist()
-    design = np.zeros((n_trs, n_total_trials), dtype=np.float32)
-    trial_ids: list[str] = []
-    for trial_local, (onset, img) in enumerate(zip(onsets, images)):
-        col = trial_offset + trial_local
+    n_conditions = len(image_index)
+    design = np.zeros((n_trs, n_conditions), dtype=np.float32)
+    trial_log: list[tuple[int, str]] = []
+    for onset, img in zip(onsets, images):
+        col = image_index[img]
         onset_tr = int(round(onset / TR))
         if 0 <= onset_tr < n_trs:
             design[onset_tr, col] = 1.0
-            trial_ids.append(img)
-    return design, trial_ids
+            trial_log.append((col, img))
+    return design, trial_log
 
 
 def run_glmsingle_persistent(bold_source: str) -> tuple[np.ndarray, np.ndarray]:
@@ -106,16 +128,16 @@ def run_glmsingle_persistent(bold_source: str) -> tuple[np.ndarray, np.ndarray]:
         print(f"  run-{r:02d}  bold {bold.shape}  trials {n_trials_per_run[-1]}", flush=True)
     print(f"  total trials across {len(RUNS)} runs: {total_trials}", flush=True)
 
-    print("[2/4] building per-run design matrices", flush=True)
-    design, all_trial_ids = [], []
-    cursor = 0
+    print("[2/4] building per-run condition-mode design matrices", flush=True)
+    image_index, _ = build_global_image_index()
+    n_conditions = len(image_index)
+    design, all_trial_log = [], []                                   # per-run (T, n_unique_images)
     for r, bold in zip(RUNS, data):
-        d, ids = build_design_matrix(r, bold.shape[-1], total_trials, cursor)
+        d, trial_log = build_design_matrix_condition_mode(r, bold.shape[-1], image_index)
         design.append(d)
-        all_trial_ids += ids
-        cursor += n_trials_per_run[RUNS.index(r)]
-    print(f"  design: {len(design)} runs × ({design[0].shape[0]} TRs × {total_trials} trials)",
-          flush=True)
+        all_trial_log += trial_log                                    # session-ordered (col, image)
+    print(f"  design: {len(design)} runs × (T_run × {n_conditions} unique images)",
+          f"total_trials={len(all_trial_log)}", flush=True)
 
     outdir = GLMSINGLE_OUT_ROOT / bold_source
     outdir.mkdir(parents=True, exist_ok=True)
@@ -135,49 +157,48 @@ def run_glmsingle_persistent(bold_source: str) -> tuple[np.ndarray, np.ndarray]:
     results = glm.fit(design, data, STIMDUR, TR, outputdir=str(outdir))
     print(f"  GLMsingle done in {time.time() - t0:.0f}s", flush=True)
 
-    # Extract trial-level βs from the TYPED (Type D) output
-    npz = outdir / "TYPED_FITHRF_GLMDENOISE_RR.npz"
-    z = np.load(npz, allow_pickle=True)
-    betas_full = z["betasmd"].squeeze().astype(np.float32)            # (V_brain, T)
-    pcnum = int(z["pcnum"])
-    fracmean = float(z["FRACvalue"].mean())
+    # Extract trial-level βs — local GLMsingle saves dict-form .npy
+    # files, not the .npz format the canonical Princeton dataset uses.
+    npy_paths = list(outdir.glob("TYPED_FITHRF_GLMDENOISE_RR.np?"))
+    if not npy_paths:
+        raise FileNotFoundError(
+            f"no TYPED output in {outdir}; got {sorted(p.name for p in outdir.iterdir())}"
+        )
+    p = npy_paths[0]
+    if p.suffix == ".npz":
+        z = np.load(p, allow_pickle=True)
+        betas_3d = z["betasmd"]
+        pcnum = int(z["pcnum"])
+        fracmean = float(z["FRACvalue"].mean())
+    else:
+        z = np.load(p, allow_pickle=True).item()
+        betas_3d = z["betasmd"]                                       # (X, Y, Z, T)
+        pcnum = int(z.get("pcnum", -1))
+        fracmean = (float(z["FRACvalue"].mean())
+                     if "FRACvalue" in z else float("nan"))
+    # Always squeeze to 2D (V, T) — handles both (X,Y,Z,T) and (V_brain, T)
+    if betas_3d.ndim == 4:
+        # 3D vol + trial — flatten spatial axes
+        betas_full = betas_3d.reshape(-1, betas_3d.shape[-1]).astype(np.float32)
+    else:
+        betas_full = betas_3d.squeeze().astype(np.float32)
     print(f"  pcnum={pcnum}  FRACvalue mean={fracmean:.3f}  betas {betas_full.shape}",
           flush=True)
     print(f"[4/4] projecting to MindEye 2792-voxel relmask + saving cell", flush=True)
-    # Reuse projection logic from import_canonical_glmsingle
-    if bold_source == "rtmotion":
-        canon_brain = nib.load(GLMSINGLE_OUT_ROOT / "rtmotion" /
-                                "sub-005_ses-03_task-C_brain.nii.gz"
-                                ).get_fdata() > 0 \
-            if (GLMSINGLE_OUT_ROOT / "rtmotion" /
-                "sub-005_ses-03_task-C_brain.nii.gz").exists() \
-            else (data[0][..., 0] != 0)                              # rough fallback
-    else:
-        canon_brain = (data[0][..., 0] != 0)
+    # Local GLMsingle output is in full-volume 3D form. betas_full is
+    # already flattened to (V_full = X*Y*Z, T). Apply finalmask + relmask.
     final_mask = nib.load(RT3T / "sub-005_final_mask.nii.gz").get_fdata() > 0
     relmask = np.load(RT3T / "sub-005_ses-01_task-C_relmask.npy")
-    me_positions = np.where(final_mask.flatten())[0][relmask]
-    canon_brain_idx = -np.ones(canon_brain.size, dtype=np.int64)
-    canon_brain_idx[canon_brain.flatten()] = np.arange(canon_brain.sum())
-    me_in_canon = canon_brain_idx[me_positions]
-    if (me_in_canon < 0).any():
-        # Fallback: GLMsingle output may use the BOLD's own data mask,
-        # not our finalmask. Use the betas_full's first dim alignment
-        # by intersecting with the first run's nonzero voxels.
-        print(f"  WARN: {(me_in_canon < 0).sum()} relmask voxels not in "
-              f"canon_brain; using vector-based fallback projection", flush=True)
-        # GLMsingle trims to brain voxels itself; betas_full first dim should
-        # match canon_brain.sum(). Need to align our finalmask via volume reshape.
-        # Easier: reshape betas_full back to 3D using canon_brain shape, then
-        # apply finalmask + relmask in 3D space.
-        if betas_full.ndim == 2 and betas_full.shape[0] == int(canon_brain.sum()):
-            vol = np.zeros((canon_brain.size, betas_full.shape[1]), dtype=np.float32)
-            vol[canon_brain.flatten()] = betas_full
-            betas_me = vol[final_mask.flatten()][relmask]
-        else:
-            raise RuntimeError(f"unexpected betas shape {betas_full.shape}")
-    else:
-        betas_me = betas_full[me_in_canon]
+    if betas_full.shape[0] != final_mask.size:
+        raise RuntimeError(
+            f"betas_full shape[0]={betas_full.shape[0]} doesn't match "
+            f"finalmask size {final_mask.size}"
+        )
+    betas_me = betas_full[final_mask.flatten()][relmask]              # (2792, T)
+    # Map condition → trial output: GLMsingle returns one β per trial
+    # occurrence in the order trials appear across runs (matches our
+    # all_trial_log). Use the trial_log's image labels as IDs.
+    all_trial_ids = [img for _, img in all_trial_log]
     return betas_me.T, np.asarray(all_trial_ids)                      # (T, 2792)
 
 

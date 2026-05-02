@@ -111,6 +111,12 @@ CELLS = [
     "Probe_canonical_sessz_repavg",
     "Probe_canonical_noz_firstrep",
     "Probe_canonical_noz_repavg",
+    # Real GLMsingle, persistent global LSR fit on rtmotion (Stage 1 only;
+    # GLMsingle stopped at Type-B due to first design lacking rep structure)
+    "GLMsingleS1_persistent_rtmotion",
+    # Full pipeline runs are pending re-launch with condition-mode design
+    "GLMsingle_persistent_rtmotion",
+    "GLMsingle_persistent_fmriprep",
     # Streaming Stage 1+3 — RT-deployable canonical pipeline
     "Streaming_S1S3_pst8_AR1freq_rtm",
     "Streaming_S1S3_pst8_AR1freq_fmriprep",
