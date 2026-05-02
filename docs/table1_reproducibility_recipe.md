@@ -130,6 +130,10 @@ Same MindEye2 architecture, fine-tuned on NSD 7T subj01 (one session of NSD data
 8. **The "first-rep" filter** picks the first occurrence (in TR order across runs) of each unique special515 image. We verified ses-03 contains exactly 50 unique special515 images, so first-rep = 50 trials.
 9. **`delay` parameter is in TRIALS, not TRs and not seconds.** Per Rishab's clarification (paper text doesn't document this): delay=0 is the "default" = ~7.5 s post-stim (HRF peak); delay=N waits N more trials × 4 s/trial; delay=63 = end-of-63-trial-run. Mapping: delay=0 → Fast, delay=5 → Slow (≈30 s post-stim), delay=63 → End-of-run. This is the single most confusing convention in the paper-deployed pipeline and is worth clarifying in the resubmission.
 10. **"Resampling" has two meanings** in this codebase. The paper mindeye.py FLIRT-cross-session-aligns each TR to fmriprep's boldref, producing files in `motion_corrected_resampled/` — that's *registration*, not spatial-resolution resampling. Rishab's "resampling" in the Discord clarification refers to *spatial* interpolation to a different voxel grid (e.g., MNI 2 mm vs 1 mm), which is a separate, optional step that doesn't apply to the Table 1 simulation.
+11. **Two parallel checkpoint families exist** for sub-005 ses-01 fine-tune:
+    - **Offline-preproc fine-tune** (the one we use): `sub-005_ses-01_task-C_..._repeats_3split_N_avgrepeats_finalmask_epochs_150` — fine-tuned on GLMsingle-output βs from offline-processed ses-01.
+    - **RT-preproc fine-tune**: `sub-005-ses-01_task-C-rt_ft_split=repeats3_delay=N_epochs=150` — fine-tuned on paper-RT-pipeline output βs at a specific delay.
+    Per Rishab's Discord clarification, the paper intended to publish numbers using the **offline-preproc fine-tune**, but at least one row (delay=0) of the internal eval sheet was generated with the rt_ft ckpt instead. Reproducers should use the offline-preproc family for all Table 1 rows. If a row's numbers can't be reproduced from the offline-preproc ckpt, check whether the published number was inadvertently from the rt_ft family.
 
 ## Cross-references
 
