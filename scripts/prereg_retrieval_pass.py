@@ -105,6 +105,12 @@ CELLS = [
     # Princeton canonical GLMsingle (raw + repeat-avg)
     "Canonical_GLMsingle_ses-03",
     "Canonical_GLMsingle_ses-03_repeatavg",
+    "Probe_canonical_cumz_firstrep",
+    "Probe_canonical_cumz_repavg",
+    "Probe_canonical_sessz_firstrep",
+    "Probe_canonical_sessz_repavg",
+    "Probe_canonical_noz_firstrep",
+    "Probe_canonical_noz_repavg",
     # Streaming Stage 1+3 — RT-deployable canonical pipeline
     "Streaming_S1S3_pst8_AR1freq_rtm",
     "Streaming_S1S3_pst8_AR1freq_fmriprep",
@@ -169,7 +175,8 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     # `cumulative_zscore_with_optional_repeat_avg`; do not re-z-score here.
     if (cell.startswith("RT_paper_replica") or
             cell.startswith("Offline_paper_replica") or
-            cell.startswith("RT_streaming_pst")):
+            cell.startswith("RT_streaming_pst") or
+            cell.startswith("Probe_canonical_")):
         betas_z = betas_all
     else:
         betas_z = cumulative_zscore(betas_all)
