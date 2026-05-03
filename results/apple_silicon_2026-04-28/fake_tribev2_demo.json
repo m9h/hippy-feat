@@ -1,0 +1,24 @@
+{
+  "method": "fake-TRIBEv2 = leave-one-image-out CLIP\u2192\u03b2 ridge across 50 special515 images",
+  "ridge_alpha": 100.0,
+  "n_test_trials": 150,
+  "n_unique_test_images": 50,
+  "empirical_template_match": {
+    "top1": 0.22666666666666666,
+    "top5": 0.5466666666666666,
+    "two_afc": 0.8609523809523809,
+    "cohens_d": 1.4619569768121232
+  },
+  "fake_tribev2_template_match": {
+    "top1": 0.02,
+    "top5": 0.14,
+    "two_afc": 0.6327891156462585,
+    "cohens_d": 0.4376832664216545
+  },
+  "comparison_mindeye2": {
+    "top1": 0.58,
+    "top5": 0.88,
+    "two_afc": 0.972,
+    "cohens_d": 2.42
+  }
+}
