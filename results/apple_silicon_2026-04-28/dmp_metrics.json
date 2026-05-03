@@ -1,0 +1,117 @@
+{
+  "ckpt": "fold10",
+  "cells": {
+    "RT_paper_EoR_K7_CSFWM_HP_e1_inclz": {
+      "n_test": 50,
+      "top1": 0.58,
+      "top5": 0.88,
+      "brain_retrieval_top1": 0.64,
+      "two_afc": 0.9722448979591837,
+      "merge_separate_auc": 0.9581795918367347,
+      "cohens_d": 2.415879249572754,
+      "brier": 0.9298047423362732,
+      "ece": 0.5287644582986831,
+      "sel@\u03c4\u22650.05": [
+        0.85,
+        20
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.2406793641562884
+    },
+    "RT_paper_EoR_K7_synthseg_HP_e1_inclz": {
+      "n_test": 50,
+      "top1": 0.52,
+      "top5": 0.78,
+      "brain_retrieval_top1": 0.6,
+      "two_afc": 0.9440816326530612,
+      "merge_separate_auc": 0.9375836734693878,
+      "cohens_d": 2.203657627105713,
+      "brier": 0.9339754581451416,
+      "ece": 0.47051731914281847,
+      "sel@\u03c4\u22650.05": [
+        0.8823529411764706,
+        17
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.23419720908626915
+    },
+    "RT_paper_EoR_K7_deepmriprep_HP_e1_inclz": {
+      "n_test": 50,
+      "top1": 0.5,
+      "top5": 0.8,
+      "brain_retrieval_top1": 0.56,
+      "two_afc": 0.9563265306122449,
+      "merge_separate_auc": 0.9546448979591837,
+      "cohens_d": 2.362380027770996,
+      "brier": 0.9299893975257874,
+      "ece": 0.4488315097987652,
+      "sel@\u03c4\u22650.05": [
+        0.8421052631578947,
+        19
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.24571231713518502
+    },
+    "RTmotion_GLMsingle_singleRep": {
+      "n_test": 50,
+      "top1": 0.62,
+      "top5": 0.86,
+      "brain_retrieval_top1": 0.7,
+      "two_afc": 0.9620408163265306,
+      "merge_separate_auc": 0.9626938775510204,
+      "cohens_d": 2.5078158378601074,
+      "brier": 0.9268412590026855,
+      "ece": 0.568825765401125,
+      "sel@\u03c4\u22650.05": [
+        1.0,
+        21
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.0
+    }
+  }
+}
