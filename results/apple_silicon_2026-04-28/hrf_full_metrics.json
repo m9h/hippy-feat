@@ -1,0 +1,173 @@
+{
+  "ckpt": "fold10",
+  "cells": {
+    "RT_paper_EoR_K7_CSFWM_HP_e1_inclz": {
+      "n_test": 50,
+      "top1": 0.58,
+      "top5": 0.88,
+      "brain_retrieval_top1": 0.64,
+      "two_afc": 0.9722448979591837,
+      "merge_separate_auc": 0.9581795918367347,
+      "cohens_d": 2.415879249572754,
+      "brier": 0.9298047423362732,
+      "ece": 0.5287644582986831,
+      "sel@\u03c4\u22650.05": [
+        0.85,
+        20
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.2406793641562884
+    },
+    "RT_paper_EoR_K7_CSFWM_HP_e1_glov_td_inclz": {
+      "n_test": 50,
+      "top1": 0.58,
+      "top5": 0.88,
+      "brain_retrieval_top1": 0.58,
+      "two_afc": 0.970204081632653,
+      "merge_separate_auc": 0.9566040816326531,
+      "cohens_d": 2.4047675132751465,
+      "brier": 0.9302635788917542,
+      "ece": 0.5289173851907253,
+      "sel@\u03c4\u22650.05": [
+        0.85,
+        20
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.2404343269392848
+    },
+    "RT_paper_EoR_K7_CSFWM_HP_e1_glov_tddisp_inclz": {
+      "n_test": 50,
+      "top1": 0.54,
+      "top5": 0.78,
+      "brain_retrieval_top1": 0.5,
+      "two_afc": 0.9522448979591837,
+      "merge_separate_auc": 0.9426285714285715,
+      "cohens_d": 2.2088725566864014,
+      "brier": 0.9352563619613647,
+      "ece": 0.49054155215621,
+      "sel@\u03c4\u22650.05": [
+        0.8888888888888888,
+        18
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.21140749520466973
+    },
+    "RT_paper_EoR_K7_CSFWM_HP_e1_spm_inclz": {
+      "n_test": 50,
+      "top1": 0.54,
+      "top5": 0.86,
+      "brain_retrieval_top1": 0.56,
+      "two_afc": 0.9551020408163265,
+      "merge_separate_auc": 0.9452163265306123,
+      "cohens_d": 2.3270955085754395,
+      "brier": 0.9303357005119324,
+      "ece": 0.4885290758311749,
+      "sel@\u03c4\u22650.05": [
+        0.9444444444444444,
+        18
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.23118817029288039
+    },
+    "RT_paper_EoR_K7_CSFWM_HP_e1_spm_tddisp_inclz": {
+      "n_test": 50,
+      "top1": 0.44,
+      "top5": 0.68,
+      "brain_retrieval_top1": 0.54,
+      "two_afc": 0.9244897959183673,
+      "merge_separate_auc": 0.9144734693877551,
+      "cohens_d": 1.9860832691192627,
+      "brier": 0.9386902451515198,
+      "ece": 0.39026668906211853,
+      "sel@\u03c4\u22650.05": [
+        0.6956521739130435,
+        23
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.18844349957498102
+    },
+    "RTmotion_GLMsingle_singleRep": {
+      "n_test": 50,
+      "top1": 0.62,
+      "top5": 0.86,
+      "brain_retrieval_top1": 0.7,
+      "two_afc": 0.9620408163265306,
+      "merge_separate_auc": 0.9626938775510204,
+      "cohens_d": 2.5078158378601074,
+      "brier": 0.9268412590026855,
+      "ece": 0.568825765401125,
+      "sel@\u03c4\u22650.05": [
+        1.0,
+        21
+      ],
+      "sel@\u03c4\u22650.1": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.2": [
+        null,
+        0
+      ],
+      "sel@\u03c4\u22650.5": [
+        null,
+        0
+      ],
+      "beta_reliability_r": 0.0
+    }
+  }
+}
