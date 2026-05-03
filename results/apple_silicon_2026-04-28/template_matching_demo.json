@@ -1,0 +1,16 @@
+{
+  "method": "empirical leave-one-rep-out template matching on raw cum-z'd \u03b2s from FAST K=7+HP+e1",
+  "n_test_trials": 150,
+  "n_unique_images": 50,
+  "top1": 0.22666666666666666,
+  "top5": 0.5466666666666666,
+  "two_afc": 0.8609523809523809,
+  "cohens_d": 1.4619569768121232,
+  "fwd_acc_scalar_positive": 0.5933333333333334,
+  "comparison_mindeye2": {
+    "top1": 0.58,
+    "top5": 0.88,
+    "two_afc": 0.972,
+    "cohens_d": 2.42
+  }
+}
