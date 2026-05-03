@@ -44,19 +44,46 @@ For each candidate processing pipeline, compute:
 
 50-way top-1 is included for paper comparability, not deployment guidance.
 
+## A note on naming: "GLMdenoise K=N" vs "aCompCor K=N"
+
+Cells in our `prereg/` directory named `RT_paper_EoR_K{N}_CSFWM_inclz` are
+**aCompCor** (Behzadi et al. 2007), not canonical GLMdenoise (Kay et al.
+2013). Both methods share machinery (PCA on a noise pool → top-K
+components as nuisance regressors) but differ in the noise pool
+definition:
+
+- **aCompCor**: anatomical noise pool (CSF + WM tissue masks)
+- **GLMdenoise**: data-driven noise pool (voxels with low task-R²)
+
+We use the file-naming `K{N}_CSFWM` for historical reasons; semantically
+these are aCompCor variants. Canonical GLMdenoise on this dataset (run as
+GLMsingle Stage 2 with task-R²-based noise pool + CV) selects
+**`pcnum=0`** — i.e., zero noise components are useful. The +1.2pp 2-AFC
+lift from K=7 comes from anatomical (aCompCor-style) noise modeling, not
+from GLMdenoise.
+
 ## Empirical ranking on this dataset (fold-10, single-rep filter)
 
 From `unified_metrics.json` (top of leaderboard by 2-AFC):
 
-| Cell | top-1 | brain | **2-AFC** | AUC | d | β-rel | Notes |
-|---|---|---|---|---|---|---|---|
-| `RTmotion_GLMsingle_singleRep` | 62.0% | 70.0% | **96.2%** | 0.963 | **2.51** | 0.000* | Full canonical GLMsingle on rtmotion BOLD; offline-style |
-| `RT_paper_EoR_K10_CSFWM_inclz` | 52.0% | 62.0% | **95.7%** | 0.944 | 2.29 | 0.238 | RT-deployable; CSF/WM K=10; closest to deployment ceiling |
-| `RT_paper_EndOfRun_pst_None_inclz` | 50.0% | 62.0% | 95.1% | 0.945 | 2.28 | 0.232 | RT-deployable; no GLMdenoise |
-| `RT_paper_EoR_fmriprep_inclz` | 48.0% | 64.0% | 94.1% | 0.934 | 2.11 | 0.215 | fMRIPrep BOLD; not RT-deployable |
-| `RT_paper_EoR_OLS_hrflib_inclz` | 42.0% | 48.0% | 92.8% | 0.900 | 1.84 | 0.152 | Per-voxel HRF library + OLS |
-| `RT_paper_Slow_pst25_inclz` | 50.0% | 52.0% | 90.9% | 0.912 | 1.94 | 0.192 | Slow tier (37s window) |
-| `RT_paper_Fast_pst5_inclz` | 44.0% | 26.0% | 87.8% | 0.839 | 1.41 | 0.198 | Fast tier (7.5s window) |
+| Cell | Method | top-1 | brain | **2-AFC** | AUC | d | β-rel | Notes |
+|---|---|---|---|---|---|---|---|---|
+| `RTmotion_GLMsingle_singleRep` | Full GLMsingle (HRF lib + GLMdenoise CV-K=0 + fracridge) | 62.0% | 70.0% | **96.2%** | 0.963 | **2.51** | 0.000* | Offline-style; canonical |
+| **`RT_paper_EoR_K7_CSFWM_inclz`** | **aCompCor K=7 + Glover + AR(1)** | 52.0% | 62.0% | **96.3%** | **0.951** | **2.38** | **0.243** | **Best RT-deployable** |
+| `RT_paper_EoR_K3_CSFWM_inclz` | aCompCor K=3 | 54.0% | 66.0% | 96.2% | 0.948 | 2.33 | 0.240 | (within sampling of K=7) |
+| `RT_paper_EoR_K5_CSFWM_inclz` | aCompCor K=5 | 48.0% | 66.0% | 96.1% | 0.950 | 2.35 | 0.243 | |
+| `RT_paper_EoR_K10_CSFWM_inclz` | aCompCor K=10 | 52.0% | 62.0% | 95.7% | 0.944 | 2.29 | 0.238 | (prior baseline) |
+| `RT_paper_EndOfRun_pst_None_inclz` | No GLMdenoise (motion only) | 50.0% | 62.0% | 95.1% | 0.945 | 2.28 | 0.232 | aCompCor-free baseline |
+| `RT_paper_EoR_fmriprep_inclz` | fMRIPrep BOLD + Glover + AR(1) | 48.0% | 64.0% | 94.1% | 0.934 | 2.11 | 0.215 | not RT-deployable |
+| `RT_paper_EoR_OLS_hrflib_inclz` | Per-voxel HRF library + OLS | 42.0% | 48.0% | 92.8% | 0.900 | 1.84 | 0.152 | HRF lib alone |
+| `RT_paper_Slow_pst25_inclz` | Slow tier (37s window) | 50.0% | 52.0% | 90.9% | 0.912 | 1.94 | 0.192 | |
+| `RT_paper_Fast_pst5_inclz` | Fast tier (7.5s window) | 44.0% | 26.0% | 87.8% | 0.839 | 1.41 | 0.198 | |
+
+**Bootstrap caveat (n=50):** the K=3..K=10 aCompCor cells are statistically
+indistinguishable from each other and from full GLMsingle at α=0.05.
+Only K=20 (collapsed) and full GLMsingle vs K=0 (no aCompCor) reach
+significance. K=7's empirical edge is real on point estimate but within
+sampling noise.
 
 *`RTmotion_GLMsingle_singleRep` β-reliability is 0.000 because the saved
 betas are already first-rep-filtered to 50 trials; reliability needs the
