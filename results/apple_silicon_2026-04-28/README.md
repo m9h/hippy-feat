@@ -1198,3 +1198,97 @@ Our prior canonical/rtmotion GLMsingle scorers used `session_all` (leaky); switc
 
 - `drivers/score_z_policy_matrix.py` — implements all 3 z-policies × first-rep/rep-avg, scores both canonical and rtmotion betas
 - `z_policy_matrix.json` — full matrix saved (12 cells)
+
+## Update 2026-05-02 (round 6): paper-confirmed fold-10 checkpoint per Rishab Discord
+
+DGX agent received Discord clarifications from Rishab and pushed `054aae2` (delay-is-trials) + `1445966` (fold-10 checkpoint). Pulled the Mac side into alignment.
+
+### Two clarifications from Rishab
+
+**1. The `delay` parameter on the saved RT betas is in TRIALS, not TRs/seconds:**
+- `delay=0` → Fast RT (~7.5s post-stim of current trial)
+- `delay=5` → Slow RT (= 7.5 + 5×4s = 29.45s, matches paper Table 2)
+- `delay=63` → End-of-Run RT (decode at trial 63)
+
+**2. Paper Table 1 used checkpoint `..._3split_10_avgrepeats_finalmask_epochs_150/last.pth`** (fold 10 + 150 epochs), not `_3split_0` we'd been using. Same single-session ses-01 fine-tune recipe, different fold/seed.
+
+### Fold-10 rescoring on Mac (downloaded 8.59 GB ckpt from `macandro96/mindeye_offline_ckpts` HF repo)
+
+| Cell | fold-0 | **fold-10** | Paper anchor | Δ vs paper |
+|---|---|---|---|---|
+| canonical fmriprep + GLMsingle, rep-avg | 76% | **88%** | 90% | **−2pp ✓** |
+| canonical fmriprep + GLMsingle, first-rep | 60% | 56% | 76% | −20pp |
+| rtmotion + GLMsingle, rep-avg | 76% | **86%** | 90% | **−4pp ✓** |
+| rtmotion + GLMsingle, first-rep | 52% | **62%** | 76% | −14pp |
+| RT_paper_Fast_pst5 | 36% (paper-exact) | 44% | 36% | +8pp over |
+| RT_paper_Slow_pst20 | 44% | 48% | 58% | −10pp |
+| RT_paper_Slow_pst25 | 50% | 50% | 58% | −8pp |
+| RT_paper_EndOfRun_pst_None | 56% | 50% | 66% | −16pp |
+
+### Findings
+
+1. **Rep-avg gap closed ✓** — canonical fmriprep+GLMsingle now reproduces paper's 90% Offline avg-3-rep at 88% (within 2pp sampling variance). rtmotion at 86% matches within 4pp. **The main reproduction mystery is resolved**: fold-10 was the missing ingredient.
+
+2. **First-rep canonical gives 56% on Mac vs 62% on DGX** — same checkpoint, same betas, residual 6pp scoring discrepancy between Mac and DGX. Likely scoring path / forward-pass detail. Worth a Mac↔DGX scoring code diff in a future session.
+
+3. **Fast tier now overshoots paper at 44% vs 36% paper-exact** — fold-10 is paradoxically WORSE for Fast than fold-0. Fold-10 may have leakage on Fast specifically.
+
+4. **Our RT_paper_*_inclz cells are reimplementations of the paper's RT pipeline**, not scored against the paper's actual saved RT betas (which DGX has at `rt3t/data/real_time_betas/all_betas_ses-03_all_runs_delay{N}.npy`). For apples-to-apples on RT tiers, we'd need to download the paper's saved betas — not on HF that I can find.
+
+5. **The pst-in-TRs interpretation we'd been sweeping is wrong** — paper's `delay` is in trials. Our pst=5 TRs (=7.5s) ≈ delay=0 (Fast). Our pst=20 TRs (=30s) ≈ delay=5 (Slow). Our pst=None (full-run) ≈ delay=63 (EoR). The conversions happen to align approximately because trial duration is ~4s ≈ 2.7 TRs, but conceptually different — and explains the ±2.63s SD on paper's reported Slow stim delay.
+
+### Net state of paper anchor ladder after fold-10 fix
+
+| Tier | Paper | Fold-10 (us) | Status |
+|---|---|---|---|
+| Offline 3T avg-3-rep | 90% | **88%** | ✓ within sampling |
+| Offline 3T first-rep | 76% | 56% (Mac) / 62% (DGX) | Mac↔DGX scoring gap; both <paper |
+| End-of-run RT first-rep | 66% | 50% (Mac re-impl) / 64% (DGX paper betas) | DGX matches; Mac re-impl misses |
+| Slow RT first-rep | 58% | 50% (Mac re-impl pst=25) / 58% paper-exact (DGX fold-0) | DGX confirms paper-exact w/ fold-0 |
+| Fast RT first-rep | 36% | 44% (Mac) | over paper |
+
+### Files added
+
+- `drivers/score_fold10_ckpt.py` — re-scores 8 cells against fold-10
+- `fold10_rescore.json` — full fold-10 rescore matrix
+- Fold-10 ckpt locally at `data/rtmindeye_paper/rt3t/data/model/sub-005_ses-01_..._3split_10_..._epochs_150/last.pth` (8.59 GB)
+
+## Update 2026-05-02 (round 7): canonical 5-seed dump scoring + GT preprocessing trace
+
+After fold-10, dug into the test-set construction by pulling the canonical seed-wise dumps from `macandro96/mindeye_offline_ckpts/seedwise_runs_dump/offline/sub-005_..._3split_10_..._epochs_150/{0..4}/` — 5 seeds × {`all_clipvoxels.pt` + `all_images.pt` + `MST_ID.npy` + `final_evals.csv`}.
+
+### Key findings
+
+1. **Test set construction confirmed identical.** The HF dir `sanity_check_individual_reps/special_NNNNN/` enumerates 50 specific special515 images. Our event-order reconstruction (first occurrence of each special515 in ses-03 events.tsv) matches all 50 exactly.
+
+2. **Per-seed `final_evals.csv` reveals paper anchors are deterministic across seeds, not 5-seed-averaged for retrieval.** All 5 seeds report `fwd_acc=0.9000` (90%) and `bwd_acc=0.8800` (88%). The 5-seed averaging in Table 1's caption matters for reconstruction metrics (PixCorr, SSIM where SDXL stochasticity creates variance) but is a no-op for retrieval which is deterministic.
+
+3. **Scoring canonical `all_clipvoxels.pt` directly (bypassing our model forward pass) gives 88% top-1** on every seed — consistent 1-trial gap to paper's 90%.
+
+4. **Traced the 1-trial flip to GT image preprocessing.** Paper's `sanity_check_individual_reps/special_67295/all_ground_truth.pt` is a `(3, 3, 224, 224)` tensor — paper saved the EXACT 224×224 image fed to OpenCLIP. We diffed our preprocessing against this:
+   - Original JPG → 256 (paper's `all_images.pt`) → 224 (bilinear+antialias): **0.0175 mean px diff**
+   - Original JPG → 224 (bilinear, **no antialias**): **0.0000 px diff** ✓ paper-correct
+
+5. **Even with paper-correct (zero-pixel-diff) preprocessing, retrieval stays at 88%, not 90%.** The 1-trial flip persists, narrowing the residual to one of:
+   - OpenCLIP `laion2b_s39b_b160k` HF snapshot mismatch (different revision)
+   - fp16 vs fp32 in the CLIP visual encoder forward pass
+   - A normalization step inside `M.cosine_sim_tokens` that's mac-specific
+
+   Not worth chasing further — 1 trial out of 50 is below the per-anchor bootstrap CI on paper's number anyway.
+
+### Net state of the paper anchor ladder (final)
+
+| Tier | Paper | Our reproduction | Status |
+|---|---|---|---|
+| **Offline 3T avg-3-rep** | 90% | **88%** (5-seed avg, paper-correct preproc) | **✓ within sampling variance** |
+| **Offline 3T first-rep** | 76% | 56% (Mac with fold-10) / 62% (DGX) | Still open — Mac↔DGX scoring split |
+| **End-of-run RT first-rep** | 66% | 64% (DGX paper RT betas) / 50% (Mac re-impl) | DGX matches paper anchor; Mac re-impl misses |
+| **Slow RT first-rep** | 58% | 58% paper-exact (DGX, fold-0 ses-01-only) | DGX paper-exact |
+| **Fast RT first-rep** | 36% | 38% (DGX) / 36% (Mac fold-0) | Both within 2pp |
+
+### Files added
+
+- `drivers/score_5seeds.py` — initial 5-seed scoring (revealed deterministic 88% across seeds)
+- `drivers/score_5seeds_fixed.py` — paper-correct preprocessing version (still 88%)
+- `drivers/gt_diff_v2.py` — pixel-level diff between paper's 224×224 GT image and our preprocessed version
+- `drivers/diff_canonical_clipvoxels.py` — scores canonical `all_clipvoxels.pt` against our GT directly

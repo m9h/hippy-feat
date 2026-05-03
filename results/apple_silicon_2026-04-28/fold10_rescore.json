@@ -1,0 +1,58 @@
+[
+  {
+    "cell": "fold10_canonical_fmriprep_glmsingle_first_rep",
+    "top1": 0.56,
+    "top5": 0.9,
+    "paper_anchor": 0.76,
+    "delta_pp": -19.999999999999996
+  },
+  {
+    "cell": "fold10_canonical_fmriprep_glmsingle_rep_avg",
+    "top1": 0.88,
+    "top5": 1.0,
+    "paper_anchor": 0.9,
+    "delta_pp": -2.0000000000000018
+  },
+  {
+    "cell": "fold10_rtmotion_glmsingle_first_rep",
+    "top1": 0.62,
+    "top5": 0.86,
+    "paper_anchor": 0.76,
+    "delta_pp": -14.000000000000002
+  },
+  {
+    "cell": "fold10_rtmotion_glmsingle_rep_avg",
+    "top1": 0.86,
+    "top5": 1.0,
+    "paper_anchor": 0.9,
+    "delta_pp": -4.0000000000000036
+  },
+  {
+    "cell": "fold10_RT_paper_Fast_pst5_inclz",
+    "top1": 0.44,
+    "top5": 0.64,
+    "paper_anchor": 0.36,
+    "delta_pp": 8.000000000000002
+  },
+  {
+    "cell": "fold10_RT_paper_Slow_pst20_inclz",
+    "top1": 0.48,
+    "top5": 0.74,
+    "paper_anchor": 0.58,
+    "delta_pp": -9.999999999999998
+  },
+  {
+    "cell": "fold10_RT_paper_Slow_pst25_inclz",
+    "top1": 0.5,
+    "top5": 0.72,
+    "paper_anchor": 0.58,
+    "delta_pp": -7.9999999999999964
+  },
+  {
+    "cell": "fold10_RT_paper_EndOfRun_pst_None_inclz",
+    "top1": 0.5,
+    "top5": 0.8,
+    "paper_anchor": 0.66,
+    "delta_pp": -16.000000000000004
+  }
+]
