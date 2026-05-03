@@ -74,15 +74,53 @@ This is what MindEye2 doesn't give natively.
 | Selective-accuracy evaluation harness | partial (have it for MindEye2) | adapt existing `score_unified_metrics.py` |
 
 **Critical bottleneck**: recon-all on sub-005's T1. Without it, no sensible
-fsaverage5 → native projection.
+fsaverage5 → native projection. **There is no MNI/FLIRT-volumetric
+shortcut**: fsaverage5 → sub-005 is a surface-to-surface morph problem,
+not a volumetric registration problem. Going through MNI volumetrically
+would mash subcortical/cortical voxels and discard the surface topology
+TRIBEv2's predictions live on.
 
-Three workarounds (in priority order):
-- **Run recon-all** — 3-6 hours, gets it right. **Currently running.**
-- **MNI atlas registration as proxy** — fast (~20 min), less accurate but
-  probably good enough for proof-of-concept
-- **Stay in surface space throughout** — re-do all our LSS fits on
-  fsaverage5-projected BOLD instead of in 2792-voxel volume space. Need
-  recon-all anyway, plus surface LSS infrastructure.
+### recon-all on Apple Silicon — known failures
+
+`mri_synthstrip` and the related deep-learning segmentation steps OOM-crash
+inside the FreeSurfer-arm container even with 32G allocated. The stock
+`~/.local/bin/freesurfer` wrapper supports `FS_RECON_ALL_PATCH` to bind-mount
+a patched recon-all that bypasses synthstrip. The patch at
+`~/Workspace/dlbs/freesurfer-patch/recon-all` already had:
+
+- Synthstrip workaround: replace mri_synthstrip with `mri_convert` of a
+  pre-computed FSL-bet brain at `/data/derivatives/brainmask/<sub>/<sub>_brain.nii.gz`
+- SynthSeg disabled: `if(0) then  # OOM workaround`
+
+But that wasn't sufficient — recon-all 8.2.0 has FOUR additional deep-learning
+segmentation steps that ALSO OOM on Mac:
+
+1. **MCADura segmentation** (`mri_mcadura_seg` at line 2222) — calls synthstrip
+   internally on `nu.mgz`. OOMs.
+2. **VSinus segmentation** (`mri_vsinus_seg` at line 2243) — needs `synthseg.rca.mgz`
+   which doesn't exist (synthseg disabled). Hard fail with "cannot find ..."
+3. **EntoWM segmentation** (`mri_entowm_seg`/`mri_sclimbic_seg` at line 2865) — TF model OOMs.
+4. (Possibly more in autorecon3 surface stages — not yet hit at the time of writing.)
+
+We patched the local `recon-all` to disable all three:
+
+```
+2222: if(0) then # PATCHED: skip MCADura (synthstrip OOM on Mac)
+2243: if(0) then # PATCHED: skip VSinus (depends on disabled synthseg)
+2865: if(0) then # PATCHED: skip EntoWM (DL OOM)
+3181: if(0) then # PATCHED: skip MCADura masking
+3187: if(0) then # PATCHED: skip VSinus masking
+3229: if(0) then # PATCHED: skip EntoWM downstream
+3394: if(0) then # PATCHED: skip EntoWM downstream
+```
+
+These steps are refinement masks that improve surface quality at dural
+attachments / venous sinuses / entorhinal WM. Skipping them produces
+slightly less clean surfaces at those locations but adequate for our
+purpose (fsaverage5 → native voxel projection of TRIBEv2 outputs).
+
+Currently running v5 at 32G memory with these disables. Past the
+failure points of v3 (synthseg.rca.mgz consumer) and v4 (mri_entowm_seg).
 
 ## Implementation plan
 
