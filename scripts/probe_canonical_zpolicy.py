@@ -68,6 +68,18 @@ def session_zscore(arr: np.ndarray) -> np.ndarray:
     return ((arr - mu) / sd).astype(np.float32)
 
 
+def session_zscore_train_only(arr: np.ndarray, ids: np.ndarray) -> np.ndarray:
+    """Paper §2.5.1 Offline policy: stats from training images only
+    (i.e. exclude special515 test trials), apply to all betas."""
+    train_mask = np.array(
+        [not str(t).startswith("all_stimuli/special515/") for t in ids]
+    )
+    train = arr[train_mask]
+    mu = train.mean(0, keepdims=True)
+    sd = train.std(0, keepdims=True) + 1e-6
+    return ((arr - mu) / sd).astype(np.float32)
+
+
 def first_rep(betas: np.ndarray, ids: np.ndarray
                ) -> tuple[np.ndarray, np.ndarray]:
     seen = set()
@@ -105,10 +117,12 @@ def main():
 
     cumz  = causal_cumulative_zscore(raw)
     sessz = session_zscore(raw)
+    sessz_train = session_zscore_train_only(raw, ids)
 
     # 6 combos × scoring policy. Save with names that make the retrieval
     # pass treat them as raw (skip its own z, since we've handled it).
-    for tag, arr in [("cumz", cumz), ("sessz", sessz), ("noz", raw)]:
+    for tag, arr in [("cumz", cumz), ("sessz", sessz),
+                       ("sessztrain", sessz_train), ("noz", raw)]:
         # First-rep (n=50)
         b_fr, i_fr = first_rep(arr, ids)
         save_cell(f"Probe_canonical_{tag}_firstrep", b_fr, i_fr)

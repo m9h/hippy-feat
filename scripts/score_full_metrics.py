@@ -37,9 +37,33 @@ from torchvision import transforms
 # ---------------------------------------------------------------------------
 PAPER_REPO = Path("/data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/scripts")
 RT_MINDEYE_SRC = Path("/data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/rt_mindEye2/src")
+GENMODELS = Path("/data/derivatives/rtmindeye_paper/repos/rtcloud-projects/mindeye/models")
 sys.path.insert(0, str(PAPER_REPO))
 sys.path.insert(0, str(RT_MINDEYE_SRC))
+sys.path.insert(0, str(GENMODELS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# xformers is installed in the container but GB10 has no working
+# memory_efficient_attention kernel for the SDXL input shapes. Monkey-patch
+# the function with a torch SDPA wrapper that handles xformers' (B, M, H, K)
+# layout by transposing to (B, H, M, K) for SDPA then back.
+import torch.nn.functional as _F
+try:
+    import xformers  # type: ignore
+    import xformers.ops as _xops  # type: ignore
+
+    def _sdpa_attention(q, k, v, attn_bias=None, p=0.0, scale=None, op=None):
+        # xformers layout: (B, M, H, K). torch SDPA: (B, H, M, K).
+        q4 = q.transpose(1, 2) if q.dim() == 4 else q
+        k4 = k.transpose(1, 2) if k.dim() == 4 else k
+        v4 = v.transpose(1, 2) if v.dim() == 4 else v
+        out = _F.scaled_dot_product_attention(q4, k4, v4, attn_mask=attn_bias,
+                                                dropout_p=p, scale=scale)
+        return out.transpose(1, 2).contiguous() if q.dim() == 4 else out
+
+    _xops.memory_efficient_attention = _sdpa_attention
+except ImportError:
+    pass
 
 import utils_mindeye  # noqa: E402
 from models import BrainNetwork  # type: ignore  # noqa: E402
@@ -101,6 +125,7 @@ def build_mindeye(num_voxels: int, device: str) -> nn.Module:
         h=HIDDEN_DIM, in_dim=HIDDEN_DIM, seq_len=SEQ_LEN,
         clip_size=CLIP_EMB_DIM, out_dim=CLIP_EMB_DIM * CLIP_SEQ_DIM,
         n_blocks=N_BLOCKS,
+        blurry_recon=False,  # fold-10 paper ckpt has no low-level submodule
     )
     out_dim = CLIP_EMB_DIM
     depth, dim_head = 6, 52
@@ -126,14 +151,14 @@ def load_diffusion_engine(device: str):
     import pickle
     from omegaconf import OmegaConf
 
-    cfg = OmegaConf.load(PAPER_REPO.parent / "generative_models/configs/unclip6.yaml")
+    cfg = OmegaConf.load(GENMODELS / "generative_models/configs/unclip6.yaml")
     cfg = OmegaConf.to_container(cfg, resolve=True)
     cfg["model"]["params"]["sampler_config"]["params"]["num_steps"] = 38
     with open(RT_ALL_DATA / "diffusion_engine", "rb") as f:
         engine = pickle.load(f)
     engine.eval().requires_grad_(False).to(device)
     ckpt = torch.load(RT_ALL_DATA / "cache/unclip6_epoch0_step110000.ckpt",
-                       map_location="cpu")
+                       map_location="cpu", weights_only=False)
     engine.load_state_dict(ckpt["state_dict"])
     batch = {
         "jpg": torch.randn(1, 3, 1, 1).to(device),
@@ -355,7 +380,7 @@ def main():
 
     print("\n[1] building MindEye + loading checkpoint", flush=True)
     model = build_mindeye(num_voxels=args.num_voxels, device=device)
-    ck = torch.load(args.checkpoint, map_location="cpu")
+    ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     model.load_state_dict(ck["model_state_dict"], strict=True)
     model.eval().requires_grad_(False)
 

@@ -372,6 +372,9 @@ CELLS = {
     "Offline_paper_replica_full": dict(loader=load_fmriprep_4d,
                                          do_repeat_avg=True,
                                          streaming_post_stim_TRs=None),
+    "Offline_paper_replica_partial": dict(loader=load_fmriprep_4d,
+                                         do_repeat_avg=False,
+                                         streaming_post_stim_TRs=None),
     # Regime B (within-run streaming) — the amendment's locked anchors.
     # Each per-trial GLM fits on BOLD/events cropped to onset_TR+pst.
     # pst=8 is the paper-RT replica per Mac's recovery of the 10pp gap.

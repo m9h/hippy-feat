@@ -58,6 +58,27 @@ CELLS = [
     "RT_paper_replica_partial",
     "RT_paper_replica_full",
     "Offline_paper_replica_full",
+    "Offline_paper_replica_partial",
+    # GLMsingle stage ablation — fmriprep (TYPEA/B/C/D)
+    "GLMsingle_fmriprep_TYPEB_partial", "GLMsingle_fmriprep_TYPEB_full",
+    "GLMsingle_fmriprep_TYPEC_partial", "GLMsingle_fmriprep_TYPEC_full",
+    "GLMsingle_fmriprep_TYPED_partial", "GLMsingle_fmriprep_TYPED_full",
+    # GLMsingle stage ablation — rtmotion (TYPEA/B/C only on disk; D missing)
+    "GLMsingle_rtmotion_TYPEB_partial", "GLMsingle_rtmotion_TYPEB_full",
+    "GLMsingle_rtmotion_TYPEC_partial", "GLMsingle_rtmotion_TYPEC_full",
+    # k-rep average diagnostic (canonical TYPED βs, special515 only)
+    "Canonical_GLMsingle_kavg_1rep",
+    "Canonical_GLMsingle_kavg_2rep",
+    "Canonical_GLMsingle_kavg_3rep",
+    # Paper §2.5.1 Offline z-policy: session-wide training-images only
+    "Probe_canonical_sessztrain_firstrep",
+    "Probe_canonical_sessztrain_repavg",
+    # Mac champion replication: Streaming RLS GLM (persistent-design ridge OLS
+    # at decode time) with K=7 CSF/WM eroded×1 HP-filtered aCompCor nuisance.
+    # Saved as raw — retrieval pass applies cum-z.
+    "RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw",
+    "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw",
+    "RT_paper_RLS_EoR_K7CSFWM_HP_e1_raw",
     # Cells 13-15: methods we coded up yesterday
     "EKF_streaming_glover_rtm",
     "HOSVD_denoise_AR1freq_glover_rtm",
@@ -182,7 +203,10 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     if (cell.startswith("RT_paper_replica") or
             cell.startswith("Offline_paper_replica") or
             cell.startswith("RT_streaming_pst") or
-            cell.startswith("Probe_canonical_")):
+            cell.startswith("Probe_canonical_") or
+            cell.startswith("GLMsingle_fmriprep_TYPE") or
+            cell.startswith("GLMsingle_rtmotion_TYPE") or
+            cell.startswith("Canonical_GLMsingle_kavg_")):
         betas_z = betas_all
     else:
         betas_z = cumulative_zscore(betas_all)
