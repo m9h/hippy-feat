@@ -1,5 +1,22 @@
 # Task 2.1 12-cell factorial — Apple Silicon (M-series) results, 2026-04-28
 
+> **PARTIALLY DEPRECATED 2026-05-03.** Round-by-round ablation history below
+> is preserved for the audit trail. Two findings supersede claims in this
+> doc, both from inspecting `PrincetonCompMemLab/mindeye_offline:avg_betas`:
+>
+> 1. **Paper Table 1 ckpt is fold-0, not fold-10.** Any "fold-10 paper-faithful"
+>    claim is wrong. Fold-variability is ~12pp on identical eval (fold-0 → 76%,
+>    fold-10 → 88% Image retrieval).
+> 2. **Paper "Offline 3T" row uses `filter_and_average_repeats`** (avg-of-3-reps
+>    per image), not first-rep as several rounds assumed. Any round whose
+>    headline was "Offline 3T first-rep stays at 56%" is solving the wrong
+>    problem — the paper's 76% is the avg-of-3 number.
+>
+> Current paper-faithful recipes and resolved reproductions are in
+> `PIPELINE.md` (top section, "2026-05-03 — Major correction"). The
+> deployment champion (Stage 11 of PIPELINE.md, 97.2% 2-AFC) is unchanged
+> and stands.
+
 Local replication of `TASK_2_1_PREREGISTRATION.md` 12-cell sweep on a Mac, intended as a reference for the DGX agent's parallel run on the same factorial design. Where the two diverge tells us whether the divergence is **algorithmic** (will reproduce identically on either platform) or **platform/numerical** (jax-mps vs CUDA).
 
 ## Hardware + environment

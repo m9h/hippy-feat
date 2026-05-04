@@ -1,5 +1,11 @@
 # Variant G + TRIBEv2-prior — Design document
 
+> **Note 2026-05-03.** The "fold-10" reference below is the *deployment*
+> ckpt (97.2% 2-AFC operating point), not the paper-Table-1 ckpt. Paper
+> Table 1 uses **fold-0**. This design is orthogonal to that distinction —
+> the structured-prior framework can wrap either fold. See `PIPELINE.md`
+> "2026-05-03 — Major correction" for the fold-0 vs fold-10 details.
+
 **Status**: design only. No experiments run yet. recon-all on sub-005 launched
 2026-05-02 to make this approach feasible (its 3-6h runtime is the gating dependency).
 

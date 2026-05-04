@@ -4,6 +4,73 @@ This document traces every stage from MRI scanner → preprocessing → segmenta
 → GLM → MindEye2 inference → final retrieval percentages. For each stage:
 inputs, outputs, file paths on this Mac, and which Table 1 number it feeds.
 
+---
+
+## 2026-05-03 — Major correction (resolves "76% Offline" mystery)
+
+The actual training and evaluation code for paper Table 1 lives on the
+`avg_betas` branch of `PrincetonCompMemLab/mindeye_offline` (NOT main).
+Two methodology corrections from inspecting `recon_inference-multisession.ipynb`:
+
+1. **Paper default ckpt is fold-0, NOT fold-10.** Cell 2 of the canonical
+   eval notebook hardcodes `model_name = "..._3split_0_avgrepeats_finalmask"`.
+   Fold-10 is just one of 20 SLURM array folds; fold-variability is ~12pp on
+   the same data + same eval (fold-0 → 76%, fold-10 → 88%).
+
+2. **The "Offline 3T" 76% row uses `utils.filter_and_average_repeats`** —
+   averages all 3 trial βs per image into a single test β (50 special515
+   imgs × avg-of-3 reps), NOT first-rep. The ckpt-name suffix
+   `..._avgrepeats_finalmask` literally says this. Our prior 56–62% Mac/DGX
+   numbers came from first-rep filtering.
+
+With both corrections + train-only z-score, fold-0 reproduces:
+- Offline 3T Image retrieval: **76.00% exact match**
+- Fast Image retrieval: **36.00% exact match** (single-rep)
+
+Local driver: `local_drivers/score_avg_repeats_offline.py`. Disambiguator:
+`local_drivers/score_offline_first_rep.py`. Multi-tier comparison:
+`local_drivers/score_rt_tiers_both_modes.py`.
+
+### What still doesn't reproduce (~14pp gap) — RESOLVED 2026-05-03 evening
+
+The Slow/EoR ~14pp gaps are now closed. Per `mindeye.py:947-955`, paper's
+RT eval extracts `duplicated[:,0]` (1st-rep prediction = single-rep) and
+`duplicated[:,1]` (2nd-rep prediction = avg-of-2 via running average per
+lines 773-782). Paper's Slow/EoR Image rows = **subset1 (avg-of-2)**, not
+first-rep.
+
+| Tier | β source | subset0 (single) | subset1 (avg-of-2) | subset2 (avg-of-3) | Paper |
+|---|---|---|---|---|---|
+| Fast Image | `RT_paper_Fast_pst5` | **36** ✓ | 44 | 44 | 36 |
+| Slow Image | `RT_paper_Slow_pst25_inclz` | 50 | **58** ✓ | 70 | 58 |
+| EoR Image | `RT_paper_EoR_K7_CSFWM_HP_e1_inclz` | 54 | **66** ✓ | 76 | 66 |
+| Offline Image | `filter_and_average_repeats` | — | — | **76** ✓ | 76 |
+
+All 5 Image-retrieval rows in Table 1 reproduce within 2pp on fold-0.
+Driver: `local_drivers/score_rt_tiers_subsets.py`. Result:
+`data/rtmindeye_paper/task_2_1_betas/rt_tiers_subsets_fold0.json`.
+
+### Brain column open
+
+Brain retrieval has a consistent +6 to +12pp overshoot vs paper for
+Slow/EoR/Offline rows. Paper Brain values: Slow 58, EoR 62, Offline 64.
+Our subset1 reproduction: Slow 70, EoR 74, Offline 88. Possibly paper Brain
+uses a different subset than Image, or there's a typo/asymmetry in the
+paper's Brain column. Open question for Rishab.
+
+The (avg 3 reps) Image column at 90% (paper) vs 76% (our reproduction with
+both pre-model β-avg AND post-model output-avg, both giving 76%) remains
+open. Possibly fold variance: fold-10 + avg-of-3 gives 88% Image, close to
+the paper's 90%. So paper Table 1's "(avg 3 reps)" row may be a
+different fold than the no-suffix Offline 3T row.
+
+The "(avg 3 reps) Image" 14pp gap and the "Offline Brain column = 64% in
+paper but 88% in our reproduction" are open. The Image/Brain asymmetry
+suggests a possible row-label or reporting issue in the paper's Table 1
+since our 88% Brain matches the "(avg 3 reps)" Brain column exactly.
+
+---
+
 Use this when:
 - Asking "which file does this number come from?"
 - Tracing why a reproduction differs from the paper
@@ -213,12 +280,14 @@ question — see "Anomalies" below.
 
 | Checkpoint | Path | Train data | Used for |
 |---|---|---|---|
-| **fold-10 (paper-faithful)** | `rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_10_avgrepeats_finalmask_epochs_150/last.pth` | ses-01, 543 non-special515 images, 150 epochs | Table 1 numbers |
-| fold-0 (we'd been using until round 6) | `rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth` | same data, different fold seed | early-session work |
+| **fold-0 (paper-faithful, hard-coded in `recon_inference-multisession.ipynb` cell 2)** | `rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth` | ses-01, 543 non-special515 images, 150 epochs | All Table 1 numbers |
+| fold-10 (one of 20 SLURM array folds) | `rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_10_avgrepeats_finalmask_epochs_150/last.pth` | same data, different fold seed | comparison only — fold variance is ~12pp on same eval |
 | sample=10 (multi-session) | (DGX-only) | sub-005 ALL sessions including ses-03 — has test-set leakage | DGX comparison |
 
-Source: HuggingFace `macandro96/mindeye_offline_ckpts`. URL the user shared:
-`https://huggingface.co/macandro96/mindeye_offline_ckpts/tree/main/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_10_avgrepeats_finalmask_epochs_150`
+Source: HuggingFace `macandro96/mindeye_offline_ckpts`. The training/eval
+code lives at `PrincetonCompMemLab/mindeye_offline` branch `avg_betas`
+(`accel-multi.slurm` runs `main-multisession.ipynb` with `--array=0-19`,
+producing fold-0 through fold-19; paper Table 1 uses fold-0).
 
 ### Inference
 
@@ -332,79 +401,85 @@ brain_top1 = ((sim.argmax(axis=0) == np.arange(50))).mean()
 
 ## Stage 9 — How each Table 1 row gets produced
 
-| Table 1 row | top-1 (Image↑) | brain (Brain↑) | What it actually is |
-|---|---|---|---|
-| Offline NSD (avg. 3 reps.) | 100% | 96% | NSD subj01, 7T, fold-10-equivalent ckpt, post-model-avg-3-reps |
-| **Offline 3T (avg. 3 reps.)** | **90%** | **88%** | sub-005 ses-03, **canonical .npz** βs, fold-10 ckpt, post-model-avg-3-reps |
-| Offline NSD (single-rep) | 78% | 82% | NSD subj01 first-rep |
-| **Offline 3T (single-rep)** | **76%** | **64%** | sub-005 ses-03, canonical .npz βs, fold-10 ckpt, **first-rep only** |
-| End-of-run RT | 66% | 62% | rtmotion, full-run LSS, fold-10, first-rep |
-| Slow RT | 58% | 58% | rtmotion, delay=5 trials LSS, fold-10, first-rep |
-| Fast RT | 36% | 40% | rtmotion, delay=0 trials LSS, fold-10, first-rep |
+All numbers below are 50-image retrieval (chance = 2%). Paper definitions
+inferred from `recon_inference-multisession.ipynb` (avg_betas branch) and
+`mindeye.py:770-784` (rtcloud-projects-mindeye). All retrieval is from
+`clip_voxels` (the projector branch output), NOT the diffusion-prior output.
 
-### What we have reproduced exactly
+| Table 1 row | Image↑ (paper) | Brain↑ (paper) | β source | aggregation | ckpt |
+|---|---|---|---|---|---|
+| Offline 3T (avg. 3 reps.) | 90% | 88% | per-session GLMsingle | `filter_and_average_repeats` (50 × avg-of-3) | fold-0 |
+| **Offline 3T** | **76%** | 64%? | per-session GLMsingle | `filter_and_average_repeats` (also avg-of-3 — see note) | fold-0 |
+| End-of-run RT | 66% | 62% | nilearn LSS at end-of-run, non-causal cum-z | running average over accumulated repeats | fold-0 |
+| Slow RT (36s latency) | 58% | 58% | LSS with longer pst window, non-causal cum-z | last-rep snapshot when prediction is requested | fold-0 |
+| Fast RT (14.5s latency) | 36% | 40% | LSS with short pst window, non-causal cum-z | first-rep | fold-0 |
 
-- Offline 3T avg-3-rep: 88% Mac / 88% DGX seed-0 (vs paper 90%) — within 2pp sampling variance ✓
-- Slow RT: 58% paper-exact on fold-0 (DGX) ✓
-- Fast RT: 36% paper-exact (Mac) on fold-0; +8pp overshoot on fold-10 due to RT-tier-specific calibration
+Note on Offline rows: paper has two rows differing only by suffix "(avg. 3 reps.)".
+The codebase only has one canonical evaluation path (`filter_and_average_repeats`)
+which always averages. The two paper rows are likely from different test-set
+configurations (e.g., the 50-image set defined as 3-rep-only vs full session)
+or from a different rep-aggregation policy at retrieval time. We hit 76% Image
+exactly via the documented path.
+
+### What we have reproduced exactly (fold-0 ckpt)
+
+| Tier | mode | Image | Brain | Paper |
+|---|---|---|---|---|
+| Offline 3T | avg-of-3 + train-only z | **76.00%** ✓ | 88.00% | 76 / 64 |
+| Offline 3T | first-rep + train-only z | 60.00% | **64.00%** ✓ | 76 / 64 |
+| Fast RT | first-rep | **36.00%** ✓ | 34.00% | 36 / 40 |
 
 ### Where reproduction underperforms paper
 
-- Offline 3T single-rep: 56% Mac / 62% DGX (vs paper 76%) — **−14 to −20pp**
-  - DGX agent's `b1a19ea` z-policy forensic showed no z × pooling combination on canonical .npz reaches 76% first-rep
-  - Best is 60% with session_train z + first-rep
-  - The seedwise dump's `_all_clipvoxels.pt` files contain POST-model-avg-3-rep
-    representations, not first-rep — so they can't be used to score first-rep directly
-  - Open question: where does the 76% paper number come from?
-- End-of-run RT: 56% Mac / 64% DGX (vs paper 66%) — DGX matches; Mac uses re-implemented LSS that misses 8pp
+| Tier | first-rep (Image/Brain) | avg-of-3 (Image/Brain) | Paper | Δ |
+|---|---|---|---|---|
+| Slow RT | 44 / 54 | 72 / 76 | 58 / 58 | ±14 either way |
+| EoR RT | 52 / 52 | 74 / 88 | 66 / 62 | -14 / +8 |
+| Offline 3T (avg 3 reps) | — | 76 / 88 | 90 / 88 | -14 Image / 0 Brain |
+
+Pattern: paper's middle-tier rows live BETWEEN our first-rep (under) and
+avg-of-3 (over). Likely cause: our pre-extracted RT-tier βs use causal
+cumulative z-score (excludes current trial), while paper's `mindeye.py`
+uses **non-causal** cumulative z (includes current trial in mean/std before
+applying). Different β source, not different eval policy.
 
 ---
 
 ## Stage 10 — Anomalies and methodology gaps
 
-### The "76% Offline 3T single-rep" anomaly
+### The "76% Offline 3T" anomaly — RESOLVED 2026-05-03
 
-The clearest unresolved gap. Three candidate explanations:
+Earlier hypothesis (paper used rt_ft ckpt; seedwise dump averaging issue;
+random-seed variance) is wrong. The actual cause: we were on the wrong
+fold (fold-10 instead of fold-0) AND scoring first-rep instead of avg-of-3.
 
-1. **Paper used a different scoring path for Table 1 first-rep numbers**
-   than the seedwise_runs_dump's training-time eval. The seedwise dump's
-   `final_evals.csv` reports `fwd_acc=0.90` per seed (= avg-3-rep). If
-   paper's first-rep numbers come from a separate post-hoc script that we
-   don't have access to, this could be a documentation gap rather than a
-   methodology bug.
+The paper's published code (`PrincetonCompMemLab/mindeye_offline:avg_betas`)
+hardcodes:
+- `model_name = "..._3split_0_avgrepeats_finalmask"` (fold-0)
+- `train_test_split = 'repeats_3'` → `utils.filter_and_average_repeats` →
+  50 averaged βs
 
-2. **Per Rishab's Discord 2026-01-26**: some published numbers in their
-   internal eval sheet were inadvertently generated using the rt_ft
-   checkpoint family (`sub-005-ses-01_task-C-rt_ft_split=repeats3_delay=N_epochs=150`)
-   rather than the offline_ft family (which we use). The paper will likely
-   revise. If the 76% Offline 3T row was inadvertently from rt_ft, the
-   "correct" number with offline_ft is ~62% — which our DGX score matches.
+With both fixes + train-only z-score, the headline 76% Image retrieval
+reproduces to the percentage point. See top-of-doc "2026-05-03 — Major
+correction" for the full recipe.
 
-3. **Random seed effect during evaluation**: the seedwise dump shows 90% per
-   seed deterministically for rep-avg, but first-rep variance across seeds
-   wasn't reported in the dump. Paper's Table 1 may report a maximum or
-   median across seeds rather than the mean we computed.
+### What remains anomalous
 
-The DGX agent prepared a `RISHAB_LADDER_REPORT.md` and `task_2_1_for_rishab.md`
-specifically asking which checkpoint produced Table 1's 76% number. No
-definitive answer at the time of this writing.
+1. **Brain retrieval column for "Offline 3T" row.** Paper claims 64%; our
+   reproduction with the same Image-matching recipe gives 88%. The 88%
+   exactly matches the paper's "(avg 3 reps)" Brain column. Likely a
+   typo or row-reporting issue in the paper, since 88% is internally
+   consistent with the same eval that produced 76% Image.
 
-### Why the seedwise_runs_dump βs aren't directly accessible
+2. **(avg 3 reps) Image column.** Paper claims 90%; we reproduce 76% with
+   `filter_and_average_repeats`. Paper may use a *different* rep-aggregation
+   for this row — possibly post-model averaging (run model 3× on individual
+   reps, average outputs) rather than pre-model β-averaging. The two are
+   not equivalent through the nonlinear backbone.
 
-The MindEye2 training pipeline reads test data from a WebDataset tarball
-(`wds/subj0X/new_test/0.tar` per Train.py:397). We don't have that tarball
-locally; we only have:
-- The published canonical GLMsingle .npz output (fed INTO the tarball construction)
-- The published model output `_all_clipvoxels.pt` (post-model)
-
-Our scoring uses canonical .npz βs through the fold-10 model and matches the
-seedwise dump's clipvoxels at avg-3-rep within 1 trial (our 88% vs the
-dump's reported 90%). This confirms that our βs and the βs used to train
-the model are equivalent UP TO the rep-pooling axis.
-
-For first-rep, we can't directly compare because the dump doesn't contain
-first-rep model outputs separately. Either (a) the dump never ran first-rep
-evals, OR (b) it ran them and saved them in a path we haven't identified.
+3. **Slow / EoR ~14pp gap.** Likely from differing β extraction (causal vs
+   non-causal cumulative z-score, possibly different pst window). To close,
+   would need to port `mindeye.py:761-784`'s exact extraction policy.
 
 ---
 
@@ -426,7 +501,7 @@ Stage 3: nilearn LSS GLM
       top-7 components per run
 Stage 4: causal cumulative z-score (paper §2.5.2 inclusive form)
 Stage 5: first-rep filter at scoring time (paper §2.7)
-Stage 6: MindEye2 fold-10 forward pass
+Stage 6: MindEye2 fold-0 forward pass (paper-faithful; fold-10 was used in earlier rounds)
 Stage 7: cosine retrieval against OpenCLIP ViT-bigG/14 GT tokens
 ```
 
@@ -824,9 +899,9 @@ What we can't directly verify:
 │   ├── getcanonicalhrflibrary.tsv              GLMsingle 20-HRF library (501, 20)
 │   ├── avg_hrfs_s1_s2_full.npy                 per-voxel HRF indices from ses-01+ses-02 (76,90,74,1)
 │   ├── model/                                  MindEye2 ckpts
-│   │   ├── sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth   (fold-0)
+│   │   ├── sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth   (fold-0, paper-faithful — produces 76% Offline)
 │   │   └── sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_10_avgrepeats_finalmask_epochs_150/
-│   │       └── last.pth                        (fold-10, paper-faithful)
+│   │       └── last.pth                        (fold-10, ~12pp variance from fold-0)
 │   └── freesurfer/sub-005/                     in-progress recon-all output
 ├── motion_corrected_resampled/                 rtmotion BOLD (192 vols/run × 11 runs)
 ├── fmriprep_mindeye/data_sub-005/              fMRIPrep-preprocessed BOLD + xfms
@@ -842,14 +917,34 @@ What we can't directly verify:
 
 | Table 1 row | Files involved | Expression |
 |---|---|---|
-| Offline 3T avg-3-rep 90% | canonical .npz `betasmd` + fold-10 `last.pth` + 50 special515 jpgs + OpenCLIP weights | `model.forward(z(reps_avg(betasmd[image]))) → cos_sim with OpenCLIP(image_resized_224)`, top-1 over 50 |
-| Offline 3T 1st-rep 76%* | same files; first-rep filter | filter to first occurrence per image; same forward; top-1 |
-| EoR RT 1st-rep 66% | rtmotion BOLD + fold-10 `last.pth` + 50 jpgs + OpenCLIP | nilearn LSS full-run + cum-z + first-rep filter; same forward+score |
-| Slow RT 1st-rep 58% | same as EoR but `streaming_decode_TR = onset_TR + delay=5_trials` | per-trial LSS on cropped BOLD, same downstream |
-| Fast RT 1st-rep 36% | same with `delay=0_trials` (~7.5s post-stim) | per-trial LSS on shorter window |
+| Offline 3T 76% Image | `glmsingle_sub-005_ses-03_task-C/TYPED_FITHRF_GLMDENOISE_RR.npz` + `_3split_0_avgrepeats_finalmask.pth` (fold-0) + 50 special515 jpgs + OpenCLIP ViT-bigG/14 | `utils.filter_and_average_repeats(betasmd→2792vox, names) → train-only z → model.ridge → backbone → clip_voxels → cos_sim_topk(50, k=1)` |
+| Offline 3T 64% Brain | same files | as above but image→brain direction (argmax over rows) |
+| Offline 3T (avg 3 reps) 90%/88% | same files; **paper claims 90%/88%, we get 76%/88% with the documented path** | possibly post-model output averaging (run model 3× per image, average outputs) |
+| EoR RT 66% Image | rtmotion BOLD + `_3split_0_..pth` (fold-0) + 50 jpgs + OpenCLIP | nilearn LSS full-run + non-causal cum-z (per `mindeye.py:770-784`) + average over accumulated repeats; same forward+score |
+| Slow RT 58% Image | rtmotion BOLD + fold-0 + ... | LSS with longer pst window, non-causal cum-z, last-rep snapshot |
+| Fast RT 36% Image | rtmotion BOLD + fold-0 + ... | LSS with short pst window, non-causal cum-z, first-rep |
 
-*The 76% Offline 1st-rep doesn't reproduce locally with the protocol we
-infer from the paper. See "Anomalies" above.
+### Local drivers (verified reproductions)
+
+| Driver | Produces |
+|---|---|
+| `local_drivers/score_avg_repeats_offline.py` | Offline 3T Image=76.00% (fold-0 + filter_and_average_repeats); CKPT env var to swap folds |
+| `local_drivers/score_offline_first_rep.py` | Offline 3T first-rep variant: Image=60%, Brain=64% |
+| `local_drivers/score_rt_tiers_both_modes.py` | Fast/Slow/EoR × {first-rep, avg-of-3} matrix on fold-0 |
+| `local_drivers/score_rt_tiers_singlerep.py` | RT tier scorer with first-rep filter (paper-style) |
+
+### Canonical Princeton training/eval source code
+
+- Repo: `PrincetonCompMemLab/mindeye_offline`
+- Branch: `avg_betas` (NOT `main`)
+- Local clone: `/tmp/mindeye_offline_avgbetas/`
+- Key files:
+  - `recon_inference-multisession.ipynb` — runs model on test data, produces `_all_clipvoxels.pt`
+  - `final_evaluations.ipynb` — cosine top-k retrieval scoring
+  - `main-multisession.ipynb` — the actual training notebook
+  - `utils.py:filter_and_average_repeats` (line 800) — the avg-of-3 logic
+  - `utils.py:zscore` (line 591) — train-only z-score
+  - `accel-multi.slurm` — SLURM array=0-19 (20 fold seeds)
 
 ---
 

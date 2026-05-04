@@ -1,5 +1,15 @@
 # Neurofeedback metrics — what to optimize for closed-loop fMRI (Norman lab framing)
 
+> **Partial deprecation 2026-05-03.** Methodology framing in this doc is
+> sound. Empirical numbers cited as "fold-10, single-rep filter" should
+> be interpreted as one specific operating point, NOT the paper-faithful
+> baseline. Paper Table 1 uses **fold-0** + `filter_and_average_repeats`
+> (avg-of-3-reps); see `PIPELINE.md` "2026-05-03 — Major correction".
+> The closed-loop deployment champion (97.2% 2-AFC, fold-10 + first-rep)
+> remains the right operating point for actual neurofeedback — different
+> goal than reproducing Table 1.
+
+
 The paper's headline metrics (50-way top-1 retrieval, multi-metric averaged
 reconstruction quality) are **research metrics**, not deployment metrics. For
 closed-loop fMRI as practiced by the Norman lab and other RT-fMRI groups, a
