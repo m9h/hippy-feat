@@ -731,10 +731,68 @@ What we DO know:
   projection of canonical .npz βs (because our forward pass produces matching
   outputs to seedwise dump within 1 trial)
 
+### Forensic on `glmsingle_sub-005_ses-01-03_task-C/TYPED_FITHRF_GLMDENOISE_RR.npz`
+
+Per the canonical-Princeton README (`docs/00-pipeline.md` in the brainiak/rtcloud-projects/mindeye repo):
+> "Each session's preprocessed data was input to GLMsingle (all 3 sessions together) to obtain single-trial response estimates"
+
+So the combined-session output should be the canonical β source. We downloaded
+it (1.6 GB) and inspected. Unexpected findings:
+
+| Property | Combined ses-01-03 | Per-session ses-03 |
+|---|---|---|
+| Voxel count | 182,879 | 183,408 |
+| Trial count | **2,079** (= 3 × 693) | 693 |
+| `pcnum` (GLMdenoise CV-K) | **4** | **0** |
+| FRAC mean | 0.061 | 0.254 |
+
+But projecting both to the relmask 2792 frame and inspecting trials:
+
+```
+combined[k] ≈ combined[k+693] ≈ combined[k+1386]    (cosine 0.9999 for ALL k)
+```
+
+The 2079-trial axis is **three nearly-identical copies of 693 βs**. NOT
+chronological ses-01→ses-02→ses-03 trial order. Best-match analysis shows
+combined[0] matches per-session ses03[105] (cos 0.88), not ses03[0] —
+mapping is not a clean permutation either.
+
+When we score retrieval on combined[1386:2079] (the assumed-chronological
+ses-03 portion) with the same scoring pipeline that gives 56% on per-session
+ses-03 βs, we get **0% top-1, 44.9% 2-AFC** (worse than chance). This means
+the combined npz is structurally different from a chronological 2079-trial
+β table — likely some internal GLMsingle CV-with-repeats artifact, not the
+direct β source for retrieval scoring.
+
+**Conclusion**: per-session ses-03 βs are the correct retrieval input. The
+combined ses-01-03 npz is for some other purpose (possibly multi-session
+hyperparameter learning or noise-pool refinement) and should not be used
+as direct β input. Our 56% (Mac) / 62% (DGX) first-rep numbers are correct
+for the per-session β path; the 14-20pp gap to paper's 76% remains
+unexplained by β source choice.
+
 What we CAN'T directly verify:
-- Whether the training-time βs are byte-identical to the canonical .npz
+- Whether the training-time βs (the file feeding the model fine-tune) are
+  byte-identical to the per-session canonical .npz
 - Whether the paper's first-rep evaluation uses a different β source or
   different preprocessing than our reproduction infers
+- Whether the combined npz's 2079-trial structure means something specific
+  in GLMsingle's internal accounting that we're not interpreting correctly
+
+### Files that *might* contain the missing-β-source
+
+The brainiak/rtcloud-projects/mindeye `docs/00-pipeline.md` references three
+HF dataset repos:
+- `rishab-iyer1/glmsingle` — the GLMsingle outputs (we have)
+- `rishab-iyer1/3t` — Princeton 3T scan data (we DON'T have)
+- `rishab-iyer1/fmriprep_mindeye` — offline-preprocessed fMRI (we DON'T have)
+- `rishab-iyer1/rt_all_data` — large model files (we partially have)
+
+The 3T and fmriprep_mindeye datasets are referenced in the paper (line 380)
+as the canonical data sources. Either of these may contain the actual
+training-data preparation (e.g., a tarball or .npy file that bridges
+canonical .npz βs and model input). Investigating these is the next
+concrete step.
 
 Things we know match (from indirect comparison):
 - ✓ Avg-3-rep retrieval: 88% (us) vs 90% (paper) — within 1 trial sampling
