@@ -71,4 +71,43 @@ not tested yet.
 - Result: `task_2_1_betas/fast_distill_results.json`
 - Refiner state: `task_2_1_betas/fast_refiner_state.pth` (overwritten — distill version supersedes the null variant)
 
-— Cross-latency distillation, 2026-05-04, fold-0, n=50 special515 ses-03.
+## v2/v3 follow-up (2026-05-04)
+
+**v2: scaled training set with ses-01/02 fmriprep BOLD added (1500 train pairs)**
+| Variant | Image | Brain |
+|---|---|---|
+| v2a per-voxel scalar (mixed BOLD) | 30 | 46 |
+| v2b low-rank rank=64 (mixed BOLD) | 30 | 42 |
+
+Both underperform v1 (40/48). The mixed BOLD source (rtmotion test-set vs
+fmriprep training augmentation) introduces a feature-distribution mismatch the
+refiner can't bridge. **BOLD source consistency between training and test
+matters more than training set size for this refiner architecture.** Capacity
+also wasn't the bottleneck — low-rank refiner with 360k params performs same
+as 5584-param scalar.
+
+**v3: ses-03-only, longer training, ensemble across late epochs**
+| Variant | Image | Brain |
+|---|---|---|
+| v3 ensemble (epochs 15-59 averaged) | **42** | 48 |
+| v3 best single test_image (test-leaked selection) | 44 | 48 |
+| v3 best single test_brain (test-leaked selection) | 42 | 50 |
+
+v3 ensemble is +2pp Image over v1 (within noise on n=50). The peak
+test-leaked single epoch hits 44% Image but that's selected with test data;
+not a fair generalization claim. Brain remains stable at 48-50% across all
+ensembling/selection strategies.
+
+## Final cross-latency distillation result
+
+**Best honest Fast result: 42% Image / 48% Brain**, +6pp Image / +14pp Brain
+over baseline 36/34. Achieved with per-voxel scalar refiner trained on ses-03
+(rtmotion BOLD) only, supervised by streaming-GLM-Slow teacher, ensembled
+across late training epochs.
+
+Real-time deployable: 14.5s student decode + 36s teacher availability for
+training the refiner offline (one-time fit per subject). The refiner adds
+zero compute at decode time — it's a per-voxel multiply-add applied to the
+incoming Fast β before fold-0.
+
+— Cross-latency distillation v1/v2/v3, 2026-05-04, fold-0, n=50 special515 ses-03.
