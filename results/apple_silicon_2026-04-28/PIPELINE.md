@@ -708,21 +708,33 @@ which is in the top-level dir, not under realtime-dump). DGX agent's commit
 
 ## What ISN'T published (and what we'd need)
 
-The MindEye2 training pipeline reads test data from a WebDataset tarball:
+We don't know exactly how the 3T sub-005 fine-tuning data is materialized
+into model input. The MindEye2 NSD training pipeline (`Train.py`) reads
+test data from a WebDataset tarball at `wds/subj0X/new_test/0.tar` (line
+383-384), but this is for **NSD subjects 1-8**, NOT for sub-005. `Train.py`
+contains no reference to "sub-005", "3T", "special515", or "finalmask" —
+those only appear in the notebooks (`final_evaluations.ipynb`).
 
-```
-wds/subj0X/new_test/0.tar
-```
+The rt-mindeye paper's 3T fine-tuning code path isn't in the .py files we
+have access to in `~/Workspace/rt_mindEye2/src/`. It's plausibly:
+- A separate fine-tuning script (not in this repo or our local clone)
+- A notebook-based loader that constructs training inputs at runtime from
+  the canonical .npz βs + events.tsv
+- A different tarball convention specific to the 3T data prep
 
-This tarball contains:
-- Pre-z-scored test βs (50 special515 × 3 reps = 150 entries)
-- Stimulus image bytes
-- Trial-level metadata (image_idx, MST_ID, etc.)
+What we DO know:
+- The test images = 50 special515 in ses-03 (verified by filename listing
+  vs HF `sanity_check_individual_reps/special_NNNNN/` directories)
+- The fold-10 ckpt's input dim is 2792 voxels (from `ridge.linears.0.weight`
+  shape (1024, 2792))
+- The ckpt expects βs in the same voxel ordering as our finalmask + relmask
+  projection of canonical .npz βs (because our forward pass produces matching
+  outputs to seedwise dump within 1 trial)
 
-This tarball is referenced in Train.py:397 but **isn't on HuggingFace**. We
-don't have it locally. Without it, we can't directly verify whether the βs
-that fed the trained model are byte-identical to the canonical .npz, or
-whether some additional preprocessing happened during tarball construction.
+What we CAN'T directly verify:
+- Whether the training-time βs are byte-identical to the canonical .npz
+- Whether the paper's first-rep evaluation uses a different β source or
+  different preprocessing than our reproduction infers
 
 Things we know match (from indirect comparison):
 - ✓ Avg-3-rep retrieval: 88% (us) vs 90% (paper) — within 1 trial sampling
