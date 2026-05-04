@@ -71,4 +71,53 @@ batch-norm-style adapter that learns a session-invariant transformation.
 - ses-01 βs: `task_2_1_betas/prereg/RT_paper_*_ses-01_betas.npy`
 - Refiner state: `task_2_1_betas/fast_refiner_state.pth`
 
-— Held-out deployment, 2026-05-04, fold-0, n=50 special515 ses-01.
+## ses-02 follow-up (rtQA flagged 3 bad runs)
+
+ses-02 was flagged in our cross-session rtQA as having lower whole-session
+tSNR (32 vs 44 for ses-01). Per-run breakdown showed only ~5% per-run drop;
+runs 5, 8, 11 specifically had tSNR 5-9pp below ses-02's per-run mean.
+
+Deployment test on ses-02's 50 special515 (different images from ses-01/03):
+
+| Tier | ses-01 Image | ses-02 Image | ses-03 Image |
+|---|---|---|---|
+| Fast subset0 (no refiner) | 38 | **56** | 36 |
+| Streaming Slow subset0 | 54 | 54 | 54 |
+
+**ses-02 retrieval is HIGHER than ses-01 despite "worse" tSNR.** Per-run
+breakdown for ses-02 Fast subset0:
+- Trials in rtQA-flagged bad runs (5, 8, 11), n=7: **71% Image accuracy**
+- Trials in rtQA-passed good runs, n=43: **53% Image accuracy**
+
+The bad runs OUTPERFORM the good runs. Same pattern in streaming Slow
+(71% vs 51%).
+
+### Why rtQA tSNR didn't predict retrieval
+
+1. The per-session image set drives most of the variance. ses-02's 50
+   special515 happen to be easier-to-decode than ses-01's, regardless of
+   signal quality.
+2. The ~5% per-run tSNR variation is below the noise floor for retrieval
+   differences on n=50 (one trial flip = 2pp).
+3. Test-trial difficulty within ses-02 dominates the bad-vs-good run split
+   (n=7 in bad runs is small; image-difficulty bias overwhelms signal-quality
+   bias).
+
+### Recommended rtQA dashboard primary alert metric
+
+Use **per-trial decoder confidence** (cosine similarity of top-1 predicted
+CLIP embedding to candidate pool) as the primary deployment-relevant signal.
+tSNR / DVARS / FD remain useful as **secondary/backup** metrics that catch
+catastrophic acquisition failures (e.g., scanner reboot, head-coil unplug,
+gradient drift > 30%), but they don't predict retrieval performance at the
+small-variation regime that ses-02's "bad runs" represent.
+
+Concrete thresholds:
+- **Per-trial decoder confidence below chance for 10+ consecutive trials** → decoder failure alert (highest priority)
+- **Per-run tSNR drops > 30% from session start** → scanner instability alert (catastrophic)
+- **Per-trial FD > 1.0mm sustained over 5 TRs** → motion alert
+- **DVARS spike rate > 5% of TRs in current run** → motion-related corruption flag
+
+The Heunis et al rtQA framework should layer these by sensitivity-priority.
+
+— Held-out deployment + ses-02 follow-up, 2026-05-04, fold-0.
