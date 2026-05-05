@@ -120,7 +120,7 @@ Same MindEye2 architecture, fine-tuned on NSD 7T subj01 (one session of NSD data
 
 ## Pitfalls and clarifications
 
-1. **The decoder checkpoint that produced Table 1 is `repeats_3split_10_..._epochs_150` (fold 10), NOT fold 0.** Multiple `_ses-01_task-C_..._3split_N_avgrepeats_finalmask` checkpoints exist on HF; only fold 10 + epochs_150 reproduces the paper. The `sample=N` checkpoints in `data_scaling_exp/` are for the data-scaling appendix, not Table 1.
+1. **The `_3split_N_` index in checkpoint names = training random seed, not k-fold split.** Per `run_all_batch.slurm:57`, the slurm array index `N` is passed both to the model name and to `--seed=N`. Same data, same train/test split; varies only model initialization + batch shuffle. Different seeds give different deterministic retrieval numbers (~12pp variance observed across folds). Multiple `_3split_N_` checkpoints exist on HF (N ∈ {0, 3, 5, 7, 10}); fold-0 reproduces paper's "Offline 3T" 76% Image exactly with `filter_and_average_repeats`, and fold-10 reproduces "Offline 3T (avg. 3 reps.)" 88-90% Image. The two paper Offline rows likely correspond to two different training seeds. The `sample=N` checkpoints in `data_scaling_exp/` are for the data-scaling appendix, not Table 1.
 2. **`pcnum=0` for sub-005 ses-03** in the canonical .npz means GLMsingle Stage 2 (GLMdenoise) selected zero PCs via bootstrap CV on this subject — the offline lift comes from Stages 1 + 3, not Stage 2. Per-subject `pcnum` ranges 0–6 across the 9 published .npz files; **K=10 was never selected** anywhere.
 3. **GLMsingle `sub-005_ses-03` uses `_all_task-C_` BOLD** (concatenates ses-01-03) at the GLMsingle pipeline level, but the fine-tune step that produces the decoder checkpoint only sees ses-01.
 4. **The deployed RT pipeline (`mindeye.py` from `rtcloud-projects/mindeye`) uses the `unionmask` 8627-voxel ses-01-03 finetune checkpoint** — different mask, different fine-tune scope, different test session (ses-06 with MST pairs). That pipeline is for the live scanner pilot; **Table 1 simulates the same algorithm retrospectively on ses-03 with finalmask + ses-01-only checkpoint**.
@@ -130,8 +130,60 @@ Same MindEye2 architecture, fine-tuned on NSD 7T subj01 (one session of NSD data
 8. **The "first-rep" filter** picks the first occurrence (in TR order across runs) of each unique special515 image. We verified ses-03 contains exactly 50 unique special515 images, so first-rep = 50 trials.
 9. **`delay` parameter is in TRIALS, not TRs and not seconds.** Per Rishab's clarification (paper text doesn't document this): delay=0 is the "default" = ~7.5 s post-stim (HRF peak); delay=N waits N more trials × 4 s/trial; delay=63 = end-of-63-trial-run. Mapping: delay=0 → Fast, delay=5 → Slow (≈30 s post-stim), delay=63 → End-of-run. This is the single most confusing convention in the paper-deployed pipeline and is worth clarifying in the resubmission.
 10. **"Resampling" has two meanings** in this codebase. The paper mindeye.py FLIRT-cross-session-aligns each TR to fmriprep's boldref, producing files in `motion_corrected_resampled/` — that's *registration*, not spatial-resolution resampling. Rishab's "resampling" in the Discord clarification refers to *spatial* interpolation to a different voxel grid (e.g., MNI 2 mm vs 1 mm), which is a separate, optional step that doesn't apply to the Table 1 simulation.
-11. **All Table 1 rows use the same checkpoint** (per Cesar's Discord clarification, 2026-05-02 follow-up): the fold-10 `..._repeats_3split_10_avgrepeats_finalmask_epochs_150` ckpt is used for **both** the Offline 3T row (decoder fed fmriprep + nilearn GLM βs) and the RT rows (decoder fed full RT-preproc βs). The earlier suspicion that an `rt_ft` checkpoint family was substituted in is wrong — there is no checkpoint-family confounder. The variation between rows is entirely on the input-β side (preprocessing pipeline + per-trial window).
+11. **Checkpoint per row is partially open.** Per Cesar's Discord clarification (2026-05-02), all Table 1 rows are intended to use the same checkpoint family (offline-preproc fine-tune `_avgrepeats_finalmask_epochs_150`). However, our reproduction shows fold-0 reproduces "Offline 3T" 76% Image exactly via `filter_and_average_repeats`, while fold-10 reproduces "Offline 3T (avg. 3 reps.)" 88-90% Image. If the paper used a single fold for both Offline rows, there must be a different mechanism producing the 76 vs 90 difference — most likely different rep-aggregation (pre-model β-avg vs post-model output-avg). Worth confirming with authors before camera-ready.
 12. **HF metrics.csv at `realtime-dump/sub-005_ses-01_task-C-offline_ft_split=repeats3_epochs=150_delay=0/metrics.csv`** is the published single-seed delay=0 (Fast RT) row from the offline-preproc fine-tune ckpt. 1-rep top-1 fwd = **0.36** there matches our reproduction (0.38) within 2 pp ✓. 3-rep avg top-1 fwd = 0.72 in this delay=0 file is *not* the same row as paper Table 1's "Offline 3T (avg 3 reps) = 0.90" — that 0.90 row uses the **fmriprep + nilearn GLM** β path (not delay=0 RT-preproc βs). Don't confuse the two.
+13. **Paper's RT eval mechanism is `subset0`/`subset1` from `mindeye.py:947-955`, not pure first-rep filtering.** When `is_repeat==True` (lines 773-784), `mindeye.py` stores the running-average of all accumulated z-scored βs for that image — so the prediction stored at the time of the 2nd-rep trial is `mean(β_rep0, β_rep1)`, not just β_rep1. The eval at lines 947-955 reads `duplicated[:,0]` (= 1st-rep prediction = single-rep) and `duplicated[:,1]` (= 2nd-rep prediction = avg-of-2 by running average). For the 50 special515 with 3 reps in ses-03, this gives 100 evaluation entries (50 primary + 50 secondary indices). Paper Table 1's RT-tier rows likely report the subset1 (avg-of-2) numbers, NOT pure first-rep. Verified empirically: subset1 of `RT_paper_EoR_K7_CSFWM_HP_e1_inclz` on fold-0 = 66% Image, exactly matching paper's EoR row.
+14. **Brain retrieval column on Offline 3T row (64%) is suspect.** The same eval that produces Image=76% (fold-0 + `filter_and_average_repeats`) gives Brain=88% in our reproduction, not 64%. The 88% matches the paper's "(avg 3 reps)" Brain column exactly. Either the paper has a typo on Offline 3T Brain, or the row reports Image and Brain from different rep-aggregation modes. Worth confirming with authors before camera-ready.
+15. **`utils.filter_and_average_repeats`** at `PrincetonCompMemLab/mindeye_offline:avg_betas/utils.py:800` is the canonical implementation of the avg-of-3 collapse for Offline rows. Used in `recon_inference-multisession.ipynb` (avg_betas branch) when `train_test_split == 'repeats_3'`. Reproducers should call this verbatim rather than rolling their own averaging.
+
+## Project extensions
+
+These extend beyond paper-Table-1 reproduction with new methods or analyses
+developed during the project. Each lives in `results/apple_silicon_2026-04-28/`
+on the `results/apple-silicon-2026-04-28` branch.
+
+- **`STREAMING_RLS_GLM.md`** — growing-design ridge OLS at decode time, an
+  alternative to per-trial LSS for the RT tiers. Implements Ernest Lo's
+  "persistent GLM" proposal cleanly. Gives +14pp on Slow subset1 / +4pp on
+  EoR subset1 over per-trial AR(1) LSS at matched nuisance regressors.
+  Driver: `local_drivers/run_streaming_rls_glm.py` (Mac), `scripts/run_streaming_rls_glm.py` (DGX).
+
+- **`STREAMING_GLM_AR1_ABLATION.md`** — 3-way ablation (per-trial AR(1) LSS
+  vs streaming OLS GLM vs streaming AR(1) GLM) confirms the +14pp Slow gain
+  is from the joint growing-design, not from missing AR(1) prewhitening. Streaming
+  with or without AR(1) gives identical numbers; AR(1) prewhitening is redundant
+  once the joint trial-design absorbs the relevant temporal autocorrelation.
+
+- **`FAST_DISTILLATION.md`** — cross-latency distillation Fast ← streaming-Slow
+  via per-voxel scalar refiner. Pushes Fast tier from 36% → 42% Image (+6pp)
+  and 34% → 48% Brain (+14pp) on the training session. Brain gain transfers
+  cross-session; Image is more BOLD-source-dependent.
+
+- **`COMBINED_PIPELINE_DEPLOYMENT.md`** — held-out deployment of the streaming
+  Slow GLM + Fast refiner on ses-01 (different special515 image set than ses-03).
+  Streaming Slow generalizes cleanly (78% Image at avg-of-3 on ses-01, matches
+  ses-03). Refiner Brain gain transfers; Image gain is BOLD-source-fragile.
+  Includes per-trial decoder confidence > tSNR finding for deployment alerting.
+
+- **`HEUNIS_COVERAGE.md`** — 137-cell preprocessing factorial mapped against
+  Heunis et al (2020) RT-fMRI denoising taxonomy. Documents what we tried,
+  what worked, and the categories not covered (physio/RETROICOR, ICA-AROMA,
+  spatial smoothing, GSR, 24-param Friston motion).
+
+- **`EOR_OFFLINE_GAP.md`** — analysis of what specifically drives the
+  Offline-vs-EoR retrieval gap when comparing at matched subset semantics.
+  Resolves the apparent 10pp gap as primarily subset-mismatch (Offline subset2
+  vs EoR subset1) plus modest β-quality differences that vanish at avg-of-3.
+
+- **`RISHAB_LADDER_REPORT.md`** — corrected version of the original four-tier
+  ladder report. Earlier headline ("Offline 3T 76% reproduces single-rep")
+  was mislabeled — the 76% number was actually from `filter_and_average_repeats`,
+  not first-rep. This rewrite is paper-author-facing.
+
+- **`FACTORIAL_BOTH_MODES.md`** — the 130-cell factorial scored under both
+  first-rep and avg-of-3 modes on fold-0. Shows ~20-30pp gap between modes
+  for most cells; useful when judging whether a preprocessing change is
+  load-bearing or noise.
 
 ## Cross-references
 
