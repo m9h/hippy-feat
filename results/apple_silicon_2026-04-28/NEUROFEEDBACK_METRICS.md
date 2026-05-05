@@ -8,6 +8,22 @@
 > The closed-loop deployment champion (97.2% 2-AFC, fold-10 + first-rep)
 > remains the right operating point for actual neurofeedback — different
 > goal than reproducing Table 1.
+>
+> **Update 2026-05-04.** Re-scored with our streaming RLS GLM and Variant G
+> cells: at single-rep on fold-0, all top methods cluster at **94% 2-AFC
+> Image / 95-96% Brain** (within sampling noise of each other). Streaming
+> RLS GLM (94.57%/95.22%) marginally tops the deployment champion (94.04%/96.08%).
+> Variant G family does NOT beat the deployment champion. The 2-AFC ceiling
+> at single-rep is essentially saturated for any aCompCor-equipped pipeline.
+> See `task_2_1_betas/two_afc_rls_variantg.json`.
+>
+> **Update 2026-05-04 (acquisition recommendation).** For *increasing* the
+> 2-AFC ceiling beyond 94%, the next high-leverage step is multi-echo EPI
+> with **pBOLD** (Bruzdiak et al 2026, bioRxiv 2026.03.19.712948) as the
+> primary BOLD-fidelity QA metric. pBOLD distinguishes BOLD-preserving
+> denoising from BOLD-suppressing denoising — a distinction tSNR can't make.
+> Specifically: GSR raises tSNR but lowers pBOLD; for closed-loop where
+> downstream classification depends on BOLD signal, GSR is contra-indicated.
 
 
 The paper's headline metrics (50-way top-1 retrieval, multi-metric averaged

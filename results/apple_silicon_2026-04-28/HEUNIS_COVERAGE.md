@@ -52,7 +52,7 @@ All numbers below are 50-way single-rep Image retrieval (top-1) on sub-005 ses-0
 | **fracridge (per-voxel)** | frac ∈ {0.3, 0.5, 0.7, 0.9, 1.0, CV-Fratio} | `OLS_glover_rtm_denoiseK0_fracR*` × 6, `RT_paper_EoR_OLS_glover_frac*_inclz` × 3 | catastrophic standalone (2-30%); only works inside GLMsingle's joint stack |
 | **RETROICOR / RVHRcor / physio** | NOT TESTED | — | physiological recordings not available in dataset |
 | **ICA-AROMA / ICA-FIX** | NOT TESTED | — | batch methods; not RT-compatible without modification |
-| **Global signal regression (GSR)** | NOT TESTED | — | not ablated; GSR could be added trivially as confound |
+| **Global signal regression (GSR)** | NOT TESTED — and the pBOLD literature argues against it for closed-loop | — | Bruzdiak et al 2026 (bioRxiv 2026.03.19.712948) shows GSR improves tSNR but *lowers* pBOLD (the probability that signal change is BOLD-dominated). For closed-loop where downstream classification depends on BOLD fidelity, GSR is contra-indicated despite its tSNR gain. |
 | **Scrubbing / frame censoring** | `OLS_K10_FrameCensor_glover_rtm` | 1 cell | -10pp subset0. Censoring hurts more than the bad TRs cost |
 
 ## 5. Filtering
@@ -125,7 +125,7 @@ Things tested AT THE β LEVEL (after extraction, before model):
 3. **24-param Friston motion / squared+derivative motion regressors** — only 6-param used
 4. **RETROICOR / physiological regression** — no physio data in this dataset
 5. **ICA-AROMA / ICA-FIX denoising** — batch; would need RT-compatible variant
-6. **Global signal regression (GSR)** — never added as confound
+6. **Global signal regression (GSR)** — never added as confound; per Bruzdiak 2026 we shouldn't, since GSR improves tSNR while lowering pBOLD (BOLD-dominance probability). Contra-indicated for closed-loop.
 7. **DVARS / FD-based prospective scrubbing** — only 1 frame-censoring cell
 8. ~~Streaming/incremental RLS GLM~~ — **BUILT 2026-05-04**, see `STREAMING_RLS_GLM.md`. Beats paper Slow by +12pp and paper EoR by +4pp at the paper's subset1 anchors.
 9. **Multivariate cross-voxel signatures** — pairwise Lévy area unbuilt
@@ -143,6 +143,22 @@ We covered the core preprocessing categories from Heunis et al thoroughly: HRF, 
 - **fmriprep BOLD source helps at Slow latency** by ~8pp single-rep — the only positive BOLD-source effect we found.
 - **GLMsingle's stages 2+3 (denoise PCA + fracridge) are essentially redundant** with AR(1) LSS + aCompCor at avg-of-3 latencies.
 
-What remains genuinely under-tested are categories that either need additional data (physio), require a different mechanism (streaming RLS), or fall outside the paper's reported pipeline (smoothing, GSR, ICA). None of these are obviously load-bearing for the Fast/Slow gap — but they're the honest gaps in our coverage relative to the Heunis taxonomy.
+What remains genuinely under-tested are categories that either need additional data (physio), require a different mechanism (streaming RLS — now built), or fall outside the paper's reported pipeline (smoothing, GSR, ICA). None of these are obviously load-bearing for the Fast/Slow gap — but they're the honest gaps in our coverage relative to the Heunis taxonomy.
+
+## Multi-echo EPI as the highest-leverage acquisition upgrade
+
+The Fast tier ceiling at 36% Image is largely SNR-limited at 7.5s post-stim BOLD windows. Multi-echo EPI (Posse 1999, Kundu 2012, Heunis 2021) addresses this on three independent axes:
+
+1. **Optimal TE-weighted combination per voxel** — universal +30-50% tSNR gain via tedana's optimal combination
+2. **ME-ICA denoising (TE-dependence as BOLD signature)** — beats ICA-AROMA for separating BOLD from non-BOLD components
+3. **pBOLD as a deployment-grade QA metric (Bruzdiak 2026, bioRxiv 2026.03.19.712948)** — quantifies "probability that signal change is BOLD-dominated" using the linear-in-TE BOLD model. Validated on N=439 scans; higher pBOLD predicts better whole-brain FC phenotype prediction. Specifically, pBOLD distinguishes BOLD-fidelity-preserving denoising (which raises pBOLD) from BOLD-suppressing denoising like GSR (which raises tSNR while lowering pBOLD) — a distinction tSNR alone cannot make.
+
+For closed-loop deployment with ME data, **per-trial pBOLD is the right primary signal-quality alert**, not tSNR. tSNR can be misleadingly high under GSR-style denoising while BOLD-fidelity collapses.
+
+Recommended for the Princeton group's next ME-collected data:
+- Sequence: ME-EPI with TE = [12, 28, 44]ms at MB=4 (or similar)
+- Combination: tedana optimal-combination per-voxel before downstream GLM
+- QA: pBOLD per-voxel per-run as the primary alert metric (alongside per-trial decoder confidence)
+- **Skip GSR** — Bruzdiak shows it actively worsens BOLD-fidelity
 
 — Mapping completed 2026-05-04, fold-0, n=50 special515 ses-03.

@@ -114,10 +114,11 @@ small-variation regime that ses-02's "bad runs" represent.
 
 Concrete thresholds:
 - **Per-trial decoder confidence below chance for 10+ consecutive trials** → decoder failure alert (highest priority)
+- **Per-trial pBOLD < 0.5 sustained** → BOLD-fidelity alert (ME-only; per Bruzdiak et al 2026, bioRxiv 2026.03.19.712948)
 - **Per-run tSNR drops > 30% from session start** → scanner instability alert (catastrophic)
 - **Per-trial FD > 1.0mm sustained over 5 TRs** → motion alert
 - **DVARS spike rate > 5% of TRs in current run** → motion-related corruption flag
 
-The Heunis et al rtQA framework should layer these by sensitivity-priority.
+The Heunis et al rtQA framework should layer these by sensitivity-priority. With ME-EPI data, pBOLD becomes the primary BOLD-fidelity metric and tSNR is demoted to catastrophic-failure detection (since tSNR can be high under GSR-style denoising while BOLD-fidelity collapses — pBOLD distinguishes the two).
 
 — Held-out deployment + ses-02 follow-up, 2026-05-04, fold-0.
