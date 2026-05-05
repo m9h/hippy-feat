@@ -241,6 +241,39 @@ def _glm_jax(timeseries: np.ndarray, onsets: np.ndarray, probe_trial: int,
     return b[:, probe_col], np.maximum(v[:, probe_col], 1e-10)
 
 
+def _glm_glmsingle_per_voxel_hrf_real_fracridge(
+        timeseries: np.ndarray, onsets: np.ndarray, probe_trial: int,
+        tr: float, n_trs: int, hrf_indices: np.ndarray,
+        hrf_library: np.ndarray, base_time: np.ndarray,
+        fracvalue: np.ndarray) -> np.ndarray:
+    """Stage 1 + Stage 3: per-voxel HRF library + per-voxel SVD fracridge.
+
+    Replicates the canonical TYPED_FITHRF_GLMDENOISE_RR fracridge operation
+    (when pcnum=0, which is the case for sub-005 ses-03).
+
+    timeseries  (V, T)   per-voxel BOLD
+    fracvalue   (V,)     per-voxel target fraction (RT-deployable: from
+                         training-session canonical .npz)
+    Returns probe-column β (V,) after fracridge shrinkage.
+    """
+    n_voxels = timeseries.shape[0]
+    result = np.zeros(n_voxels, dtype=np.float32)
+    n_hrf_trs = int(np.ceil(32.0 / tr))
+    unique_hrfs = np.unique(hrf_indices)
+    for h in unique_hrfs:
+        voxel_ids = np.where(hrf_indices == int(h))[0]
+        if len(voxel_ids) == 0:
+            continue
+        hrf = resample_hrf(hrf_library[:, int(h)], base_time, tr, n_hrf_trs)
+        dm, probe_col = build_design_matrix(onsets, tr, n_trs, hrf, probe_trial)
+        Y = timeseries[voxel_ids]                                  # (V_h, T)
+        beta_frac = _ols_fracridge_per_voxel(
+            dm, Y, fracvalue[voxel_ids],
+        )                                                           # (V_h, P)
+        result[voxel_ids] = beta_frac[:, probe_col]
+    return result
+
+
 def _glm_glmsingle_per_voxel_hrf(timeseries: np.ndarray, onsets: np.ndarray,
                                   probe_trial: int, tr: float, n_trs: int,
                                   hrf_indices: np.ndarray, hrf_library: np.ndarray,
@@ -360,11 +393,111 @@ def _fracridge_voxel(beta_ols_per_voxel: np.ndarray,
     return (coef @ Vh).astype(np.float32)
 
 
+def _ols_fracridge_per_voxel(X: np.ndarray, Y: np.ndarray,
+                               target_frac: np.ndarray,
+                               n_grid: int = 51) -> np.ndarray:
+    """Per-voxel SVD-truncated ridge with shrinkage matched to target_frac.
+
+    Implements the canonical fracridge operation (Rokem & Kay 2020):
+    β(λ_v) = V (σ ⊙ z_v) / (σ² + λ_v), where λ_v is chosen so that
+    ‖β(λ_v)_v‖ / ‖β_OLS_v‖ = target_frac[v].
+
+    Direction-changing per voxel (SVD components shrunk by different
+    amounts), not the scalar `β * frac` rescale that leaves cosine
+    distance structure unchanged.
+
+    Args
+    ----
+    X            (T, P) design matrix
+    Y            (V, T) BOLD per voxel (raw or AR(1)-prewhitened)
+    target_frac  (V,)   per-voxel target fraction in [0, 1]
+    n_grid       int    number of λ values to scan when finding the per-
+                        voxel target fraction (51 = ~1.5x denser than the
+                        canonical 21-point grid; cheap)
+
+    Returns (V, P) per-voxel fracridge β.
+    """
+    eps = 1e-10
+    U, S, Vt = np.linalg.svd(X, full_matrices=False)            # X = U Σ V^T
+    z = U.T @ Y.T                                                # (rank, V)
+    inv_S = np.where(S > eps, 1.0 / S, 0.0)
+    beta_ols = Vt.T @ (inv_S[:, None] * z)                       # (P, V)
+    beta_ols_norm = np.linalg.norm(beta_ols, axis=0) + eps       # (V,)
+
+    lam_max = max(float(S.max() ** 2) * 1e6, 1e6)
+    lam_grid = np.concatenate([[0.0],
+                                  np.logspace(-6, np.log10(lam_max),
+                                              n_grid - 1)]).astype(np.float32)
+
+    ratios = np.zeros((n_grid, Y.shape[0]), dtype=np.float32)
+    for k, lam in enumerate(lam_grid):
+        weights = (S / (S ** 2 + lam)).astype(np.float32)        # (rank,)
+        coef = weights[:, None] * z                              # (rank, V)
+        beta_lam_norm = np.linalg.norm(Vt.T @ coef, axis=0)      # (V,)
+        ratios[k] = beta_lam_norm / beta_ols_norm
+
+    # Find λ per voxel that minimizes |ratio - target_frac|.
+    diffs = np.abs(ratios - target_frac[None, :])
+    best_k = np.argmin(diffs, axis=0)                            # (V,)
+    best_lam = lam_grid[best_k].astype(np.float32)               # (V,)
+
+    weights_per_v = (S[:, None] / (S[:, None] ** 2 + best_lam[None, :])
+                      ).astype(np.float32)                        # (rank, V)
+    coef_per_v = weights_per_v * z
+    beta_frac = (Vt.T @ coef_per_v).T                            # (V, P)
+    return beta_frac.astype(np.float32)
+
+
+def _load_canonical_fracvalue_to_relmask(
+    glmsingle_dir: Path = Path(
+        "/data/derivatives/rtmindeye_paper/glmsingle/glmsingle_sub-005_ses-01-02_task-C"
+    ),
+) -> np.ndarray:
+    """Read per-voxel `FRACvalue` from a training-session canonical GLMsingle
+    output, project onto the MindEye 2792-voxel decoder mask. Returns a
+    (2792,) float array — RT-deployable as a precomputed shrinkage table.
+    """
+    import nibabel as nib
+    z = np.load(glmsingle_dir / "TYPED_FITHRF_GLMDENOISE_RR.npz", allow_pickle=True)
+    fv_full = z["FRACvalue"].squeeze().astype(np.float32)              # (V_canon,)
+    canon_brain = nib.load(
+        glmsingle_dir
+        / f"sub-005_{glmsingle_dir.name.replace('glmsingle_sub-005_', '').replace('glmsingle_', '')}_brain.nii.gz"
+    ).get_fdata() > 0
+    final_mask = nib.load(
+        Path("/data/derivatives/rtmindeye_paper/rt3t/data/sub-005_final_mask.nii.gz")
+    ).get_fdata() > 0
+    relmask = np.load(
+        Path("/data/derivatives/rtmindeye_paper/rt3t/data/sub-005_ses-01_task-C_relmask.npy")
+    )
+    me_positions = np.where(final_mask.flatten())[0][relmask]          # (2792,)
+    canon_brain_idx = -np.ones(canon_brain.size, dtype=np.int64)
+    canon_brain_idx[canon_brain.flatten()] = np.arange(canon_brain.sum())
+    me_in_canon = canon_brain_idx[me_positions]
+    if (me_in_canon < 0).any():
+        # Some MindEye voxels not in this training-session brain mask;
+        # default fraction = 1.0 (no shrinkage) for those
+        fv = np.ones(len(me_positions), dtype=np.float32)
+        valid = me_in_canon >= 0
+        fv[valid] = fv_full[me_in_canon[valid]]
+        n_default = int((~valid).sum())
+        print(f"  [frac-load] {n_default} of {len(me_positions)} relmask voxels "
+              f"not in training brain mask; defaulted to frac=1.0")
+        return fv
+    return fv_full[me_in_canon]
+
+
+def run_glm_cell_with_streaming(*args, streaming_post_stim_TRs: int | None = None, **kwargs):
+    """Wrapper that lets streaming_post_stim_TRs be threaded through CELLS."""
+    return run_glm_cell(*args, streaming_post_stim_TRs=streaming_post_stim_TRs, **kwargs)
+
+
 def run_glm_cell(cell_name: str, mode: str, bold_source: str,
                  hrf_strategy: str, session: str, runs: list[int],
                  prior_mean: np.ndarray | None = None,
                  prior_var: np.ndarray | None = None,
                  denoise: str | None = None,
+                 streaming_post_stim_TRs: int | None = None,
                  ) -> tuple[np.ndarray, list[str]]:
     """Run cells 1, 2, 4, 5, 6 — pure GLM (no denoising) variants."""
     flat_brain, rel = load_mask()
@@ -379,6 +512,16 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
     # Reset session-rho cache for cell 17 path; populated lazily on first call
     globals()["_SESSION_RHO_CACHE"] = None
     globals()["_SESSION_RHO_TS"] = None
+
+    # Pre-load training-derived per-voxel fracridge table for canonical_frac
+    # / canonical_real_frac denoise (Stage 3 with FRACvalue frozen from a
+    # prior session).
+    canonical_frac = None
+    if denoise in ("canonical_frac", "canonical_real_frac"):
+        canonical_frac = _load_canonical_fracvalue_to_relmask()
+        print(f"  [denoise={denoise}] loaded ses-01-02 FRACvalue, "
+              f"mean={canonical_frac.mean():.3f} range "
+              f"{canonical_frac.min():.3f}-{canonical_frac.max():.3f}")
 
     # First load all runs' BOLD + events (needed for denoising path)
     timeseries_per_run = []
@@ -527,14 +670,29 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
             beta_noise = ts @ comps                       # (V, K)
             ts = (ts - beta_noise @ comps.T).astype(np.float32)
         for trial_i in range(len(onsets)):
-            if hrf_strategy == "glmsingle_lib":
+            # Streaming variant: crop BOLD/design to onset_TR + post_stim
+            if streaming_post_stim_TRs is not None:
+                onset_TR = int(round(float(onsets[trial_i]) / tr))
+                decode_TR = min(onset_TR + streaming_post_stim_TRs, n_trs - 1)
+                ts_use = ts[:, :decode_TR + 1]
+                n_trs_use = decode_TR + 1
+            else:
+                ts_use = ts
+                n_trs_use = n_trs
+            if hrf_strategy == "glmsingle_lib" and denoise == "canonical_real_frac":
+                # Stage 1 + Stage 3 (no AR(1)) — proper SVD-based fracridge
+                beta = _glm_glmsingle_per_voxel_hrf_real_fracridge(
+                    ts_use, onsets, trial_i, tr, n_trs_use,
+                    hrf_indices, hrf_library, base_time, canonical_frac,
+                )
+            elif hrf_strategy == "glmsingle_lib":
                 beta = _glm_glmsingle_per_voxel_hrf(
-                    ts, onsets, trial_i, tr, n_trs,
+                    ts_use, onsets, trial_i, tr, n_trs_use,
                     hrf_indices, hrf_library, base_time, mode=mode,
                 )
             else:
                 beta, _ = _glm_jax(
-                    ts, onsets, trial_i, tr, n_trs, mode=mode,
+                    ts_use, onsets, trial_i, tr, n_trs_use, mode=mode,
                     prior_mean=prior_mean, prior_var=prior_var,
                 )
             # Optional fracridge per-voxel shrinkage (cell 7, 8)
@@ -546,6 +704,10 @@ def run_glm_cell(cell_name: str, mode: str, bold_source: str,
                 beta = beta * 0.5 * (
                     1.0 + ols_norm / (ols_norm + 1e-3)   # tiny smoothing
                 )
+            elif denoise == "canonical_frac" and canonical_frac is not None:
+                # Stage 3 with frozen-from-training per-voxel FRACvalue.
+                # RT-deployable: shrinkage table is precomputed offline.
+                beta = (beta * canonical_frac).astype(np.float32)
             all_betas.append(beta)
             img = events.iloc[trial_i].get("image_name", str(trial_i))
             trial_ids.append(str(img))
@@ -604,6 +766,83 @@ CELLS = {
     "LogSig_AR1freq_glover_rtm":
         dict(mode="ar1_freq", bold_source="rtmotion", hrf_strategy="glover",
              denoise="logsig_tcompcor"),
+    # H3'-corrected: streaming pst=8 + session-ρ̂ frozen from full-session
+    # streaming AR(1) tracker. The architecturally clean Regime C noise
+    # model: per-trial β fit on cropped BOLD with frozen-from-past-runs ρ̂.
+    "HybridOnline_streaming_pst8_AR1freq_glover_rtm":
+        dict(mode="ar1_session_rho", bold_source="rtmotion",
+             hrf_strategy="glover", streaming_post_stim_TRs=8),
+    # GLMsingle gap-fill: cell 6 covers Stage-1-alone, cells 7/8 cover
+    # Stages 2+3 with Glover HRF. The full Stage-1+2+3 stack and Stage 1
+    # paired with Variant G have never been measured. Mac scored Stage
+    # 1+2+3 only on top-1 (commit 2f96057, +0/+2pp) — never on AUC.
+    "AR1freq_glmsingleFull_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib", denoise="glmdenoise_fracridge"),
+    "VariantG_glmsingleFull_rtm":
+        dict(mode="variant_g", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib", denoise="glmdenoise_fracridge"),
+    "VariantG_glmsingleS1_rtm":
+        dict(mode="variant_g", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib"),
+    "AR1freq_glmsingleFull_fmriprep":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib", denoise="glmdenoise_fracridge"),
+    # BOLD-source isolation: fmriprep + Glover + GLMdenoise — head-to-head
+    # against cell 7 (rtmotion + Glover + GLMdenoise, AUC 0.886) tells us
+    # whether fmriprep BOLD adds anything once GLMdenoise is in place.
+    "AR1freq_glover_fmriprep_glmdenoise_fracridge":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glover", denoise="glmdenoise_fracridge"),
+    "VariantG_glover_fmriprep_glmdenoise_fracridge":
+        dict(mode="variant_g", bold_source="fmriprep",
+             hrf_strategy="glover", denoise="glmdenoise_fracridge"),
+    # Streaming GLMsingle Stage 1 + Stage 3 — RT-deployable canonical
+    # pipeline. Per-voxel HRF library (Stage 1, frozen from training)
+    # plus per-voxel scalar fracridge (Stage 3, FRACvalue frozen from
+    # ses-01-02 canonical GLMsingle output). Tests whether
+    # Stages 1+3 survive windowing — the H3' deliverable on the
+    # paper-Offline-vs-paper-RT gap.
+    "Streaming_S1S3_pst8_AR1freq_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac",
+             streaming_post_stim_TRs=8),
+    "Streaming_S1S3_pst8_AR1freq_fmriprep":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac",
+             streaming_post_stim_TRs=8),
+    "FullRun_S1S3_AR1freq_rtm":
+        dict(mode="ar1_freq", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac"),
+    "FullRun_S1S3_AR1freq_fmriprep":
+        dict(mode="ar1_freq", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_frac"),
+    # Real per-voxel SVD fracridge (Rokem & Kay 2020) — direction-changing
+    # ridge, not scalar shrinkage. Stage 1 (HRF library) + Stage 3 (real
+    # fracridge) approximation of canonical TYPED_FITHRF_GLMDENOISE_RR.
+    # Should approach canonical AUC 0.856 if the implementation is right.
+    "FullRun_S1S3realFRAC_rtm":
+        dict(mode="ols", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac"),
+    "FullRun_S1S3realFRAC_fmriprep":
+        dict(mode="ols", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac"),
+    "Streaming_S1S3realFRAC_pst8_rtm":
+        dict(mode="ols", bold_source="rtmotion",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac",
+             streaming_post_stim_TRs=8),
+    "Streaming_S1S3realFRAC_pst8_fmriprep":
+        dict(mode="ols", bold_source="fmriprep",
+             hrf_strategy="glmsingle_lib",
+             denoise="canonical_real_frac",
+             streaming_post_stim_TRs=8),
     # Cells 10-12 require nilearn — separate driver: scripts/rt_paper_full_replica.py
 }
 
@@ -657,6 +896,7 @@ def main():
                 session=args.session, runs=args.runs,
                 prior_mean=prior_mean, prior_var=prior_var,
                 denoise=config.get("denoise"),
+                streaming_post_stim_TRs=config.get("streaming_post_stim_TRs"),
             )
             save_cell(cell, betas, trial_ids, args.session, config)
             print(f"  elapsed: {time.time() - t0:.1f}s")

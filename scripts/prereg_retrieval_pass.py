@@ -58,6 +58,27 @@ CELLS = [
     "RT_paper_replica_partial",
     "RT_paper_replica_full",
     "Offline_paper_replica_full",
+    "Offline_paper_replica_partial",
+    # GLMsingle stage ablation — fmriprep (TYPEA/B/C/D)
+    "GLMsingle_fmriprep_TYPEB_partial", "GLMsingle_fmriprep_TYPEB_full",
+    "GLMsingle_fmriprep_TYPEC_partial", "GLMsingle_fmriprep_TYPEC_full",
+    "GLMsingle_fmriprep_TYPED_partial", "GLMsingle_fmriprep_TYPED_full",
+    # GLMsingle stage ablation — rtmotion (TYPEA/B/C only on disk; D missing)
+    "GLMsingle_rtmotion_TYPEB_partial", "GLMsingle_rtmotion_TYPEB_full",
+    "GLMsingle_rtmotion_TYPEC_partial", "GLMsingle_rtmotion_TYPEC_full",
+    # k-rep average diagnostic (canonical TYPED βs, special515 only)
+    "Canonical_GLMsingle_kavg_1rep",
+    "Canonical_GLMsingle_kavg_2rep",
+    "Canonical_GLMsingle_kavg_3rep",
+    # Paper §2.5.1 Offline z-policy: session-wide training-images only
+    "Probe_canonical_sessztrain_firstrep",
+    "Probe_canonical_sessztrain_repavg",
+    # Mac champion replication: Streaming RLS GLM (persistent-design ridge OLS
+    # at decode time) with K=7 CSF/WM eroded×1 HP-filtered aCompCor nuisance.
+    # Saved as raw — retrieval pass applies cum-z.
+    "RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw",
+    "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw",
+    "RT_paper_RLS_EoR_K7CSFWM_HP_e1_raw",
     # Cells 13-15: methods we coded up yesterday
     "EKF_streaming_glover_rtm",
     "HOSVD_denoise_AR1freq_glover_rtm",
@@ -69,6 +90,63 @@ CELLS = [
     "HybridOnline_AR1freq_glover_rtm",
     # Cell 20: log-signature features of tCompCor PCs as nuisance regressors
     "LogSig_AR1freq_glover_rtm",
+    # TASK_2_1_AMENDMENT_2026-04-28: locked Regime B (within-run streaming)
+    # cells. Per-trial GLM fit on BOLD/events cropped to onset_TR + pst.
+    # pst=8 with repeat-avg is the paper-RT canonical replica.
+    "RT_paper_replica_streaming_pst4_partial",
+    "RT_paper_replica_streaming_pst6_partial",
+    "RT_paper_replica_streaming_pst8_partial",
+    "RT_paper_replica_streaming_pst10_partial",
+    "RT_paper_replica_streaming_pst8_full",
+    # Regime C — cross-run HOSVD template confound (H3' deliverable)
+    "RT_streaming_pst8_HOSVD_K5_partial",
+    "RT_streaming_pst8_HOSVD_K10_partial",
+    "RT_streaming_pst8_HOSVD_K5_full",
+    # H3'-corrected variants
+    "HybridOnline_streaming_pst8_AR1freq_glover_rtm",
+    "RT_streaming_pst8_ResidHOSVD_K5_partial",
+    "RT_streaming_pst8_ResidHOSVD_K10_partial",
+    "RT_streaming_pst8_ResidHOSVD_K5_full",
+    # GLMsingle gap-fill: full Stage 1+2+3 (rtmotion + fmriprep), Stage 1 + VG
+    "AR1freq_glmsingleFull_rtm",
+    "VariantG_glmsingleFull_rtm",
+    "VariantG_glmsingleS1_rtm",
+    "AR1freq_glmsingleFull_fmriprep",
+    "AR1freq_glover_fmriprep_glmdenoise_fracridge",
+    "VariantG_glover_fmriprep_glmdenoise_fracridge",
+    # Paper's actual RT-pipeline betas at each Figure-3 delay
+    "Paper_RT_actual_delay0",
+    "Paper_RT_actual_delay1",
+    "Paper_RT_actual_delay3",
+    "Paper_RT_actual_delay5",
+    "Paper_RT_actual_delay10",
+    "Paper_RT_actual_delay15",
+    "Paper_RT_actual_delay20",
+    "Paper_RT_actual_delay63",
+    # Princeton canonical GLMsingle (raw + repeat-avg)
+    "Canonical_GLMsingle_ses-03",
+    "Canonical_GLMsingle_ses-03_repeatavg",
+    "Probe_canonical_cumz_firstrep",
+    "Probe_canonical_cumz_repavg",
+    "Probe_canonical_sessz_firstrep",
+    "Probe_canonical_sessz_repavg",
+    "Probe_canonical_noz_firstrep",
+    "Probe_canonical_noz_repavg",
+    # Real GLMsingle, persistent global LSR fit on rtmotion (Stage 1 only;
+    # GLMsingle stopped at Type-B due to first design lacking rep structure)
+    "GLMsingleS1_persistent_rtmotion",
+    # Full pipeline runs are pending re-launch with condition-mode design
+    "GLMsingle_persistent_rtmotion",
+    "GLMsingle_persistent_fmriprep",
+    # Streaming Stage 1+3 — RT-deployable canonical pipeline
+    "Streaming_S1S3_pst8_AR1freq_rtm",
+    "Streaming_S1S3_pst8_AR1freq_fmriprep",
+    "FullRun_S1S3_AR1freq_rtm",
+    "FullRun_S1S3_AR1freq_fmriprep",
+    "FullRun_S1S3realFRAC_rtm",
+    "FullRun_S1S3realFRAC_fmriprep",
+    "Streaming_S1S3realFRAC_pst8_rtm",
+    "Streaming_S1S3realFRAC_pst8_fmriprep",
 ]
 
 
@@ -120,9 +198,15 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     # (post-2026-04-28 fix to causal cumulative). Skip re-z to avoid
     # double-application — Mac's v2 retrieval eval handles cell 10 the
     # same way.
-    if cell in ("RT_paper_replica_partial",
-                "RT_paper_replica_full",
-                "Offline_paper_replica_full"):
+    # All cells driven by rt_paper_full_replica.py already cum-z'd inside
+    # `cumulative_zscore_with_optional_repeat_avg`; do not re-z-score here.
+    if (cell.startswith("RT_paper_replica") or
+            cell.startswith("Offline_paper_replica") or
+            cell.startswith("RT_streaming_pst") or
+            cell.startswith("Probe_canonical_") or
+            cell.startswith("GLMsingle_fmriprep_TYPE") or
+            cell.startswith("GLMsingle_rtmotion_TYPE") or
+            cell.startswith("Canonical_GLMsingle_kavg_")):
         betas_z = betas_all
     else:
         betas_z = cumulative_zscore(betas_all)
@@ -145,12 +229,26 @@ def run_cell(cell: str, model, gt_emb: np.ndarray,
     hits1 = top1 == trial_idx
     hits5 = np.array([trial_idx[i] in top5[i] for i in range(len(sim))])
 
+    # First-rep-only mask (50 trials max) — matches Iyer et al. ICML 2026
+    # Table 1 default eval ("single-trial betas from the first presentation
+    # of the three repeats only"). For cells 11/12 / repeatavg etc. where
+    # ids are already unique-per-image, every trial is a "first rep".
+    seen = set()
+    first_rep_mask = np.zeros(len(test_ids), dtype=bool)
+    for i, name in enumerate(test_ids):
+        if name not in seen:
+            first_rep_mask[i] = True
+            seen.add(name)
+
     return {
         "cell": cell,
         "n_test_trials": int(test_betas.shape[0]),
         "n_unique_test_images": int(len(np.unique(trial_idx))),
         "top1_image": float(hits1.mean()),
         "top5_image": float(hits5.mean()),
+        "n_first_rep": int(first_rep_mask.sum()),
+        "top1_image_first_rep": float(hits1[first_rep_mask].mean()),
+        "top5_image_first_rep": float(hits5[first_rep_mask].mean()),
     }
 
 
@@ -189,9 +287,11 @@ def main():
         if "error" in r:
             print(f"  {cell:<46}  ERROR: {r['error']}", flush=True)
         else:
+            fr = (f"top1_fr={r.get('top1_image_first_rep', 0.0):.3f} "
+                  f"(n={r.get('n_first_rep', 0)})") if 'top1_image_first_rep' in r else ""
             print(f"  {cell:<46}  n={r['n_test_trials']:<4}  "
                   f"top1={r['top1_image']:.3f}  top5={r['top5_image']:.3f}  "
-                  f"({r['elapsed_s']:.1f}s)", flush=True)
+                  f"{fr}  ({r['elapsed_s']:.1f}s)", flush=True)
 
     OUT_JSON.write_text(json.dumps(results, indent=2))
     print(f"\nWrote {OUT_JSON}", flush=True)
