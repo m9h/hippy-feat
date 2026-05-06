@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:gb10:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/data/derivatives/rtmindeye_paper/logs/%x-%j.out
 
 # Full Table-1-style scorer: 8 reconstruction metrics + 2 retrieval metrics,
@@ -21,12 +21,16 @@ fi
 
 # Paper-confirmed fold-10 ckpt (per Rishab's Discord clarification).
 CKPT=${CKPT:-/data/3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_10_avgrepeats_finalmask_epochs_150/last.pth}
-# Default cells = 5 Table 1 tier rows we have βs for, all paper-faithful:
-#   Probe_canonical_sessztrain_firstrep  → Offline 3T (single first-rep)
-#   Probe_canonical_sessztrain_repavg    → Offline 3T (avg 3 reps)
-#   Paper_RT_actual_delay0               → Fast RT
-#   Paper_RT_actual_delay5               → Slow RT
-#   Paper_RT_actual_delay63              → End-of-run RT
+# Default cells = 5 Table 1 tier rows we have βs for, all paper-faithful.
+# Mapping per docs/table1_reproducibility_recipe.md Pitfall #9 (Rishab's
+# clarification): `delay` is in TRIALS, not TRs and not seconds. delay=0 is
+# the default (~7.5s post-stim of current trial = HRF peak); delay=N waits
+# N more trials × ~4 s/trial; delay=63 = end-of-63-trial-run.
+#   Probe_canonical_sessztrain_firstrep  → Offline 3T (single first-rep)  [76% paper]
+#   Probe_canonical_sessztrain_repavg    → Offline 3T (avg 3 reps)        [90% paper]
+#   Paper_RT_actual_delay0               → Fast RT  (~7.5 s post-stim)    [36% paper]
+#   Paper_RT_actual_delay5               → Slow RT  (~27.5 s post-stim)   [58% paper]
+#   Paper_RT_actual_delay63              → End-of-run RT                  [66% paper]
 CELLS=${CELLS:-Probe_canonical_sessztrain_firstrep Probe_canonical_sessztrain_repavg Paper_RT_actual_delay0 Paper_RT_actual_delay5 Paper_RT_actual_delay63}
 N_SEEDS=${N_SEEDS:-5}
 # Probe_canonical_*_firstrep / _repavg cells are already n=50 unique images;

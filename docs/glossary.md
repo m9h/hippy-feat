@@ -56,6 +56,164 @@ across confidence bins. Lower = better-calibrated. Range [0, 1].
 
 ---
 
+## Paper Table 1 reconstruction metrics
+
+All eight reconstruction metrics in Iyer et al. Table 1 are computed by
+**`utils_mindeye.calculate_*` from
+`rtcloud-projects/mindeye/scripts/utils_mindeye.py`** (re-implementations
+of the MindEye2 originals). Each runs on the 5-seed-averaged
+reconstructions vs. ground-truth special515 images, then the per-seed
+metric value is itself averaged over seeds.
+
+**PixCorr** (↑) — `calculate_pixcorr`
+Per-trial Pearson correlation between recon and GT, both flattened to
+3·H·W vectors, mean across trials. Direct pixel-level fidelity.
+
+**SSIM** (↑) — `calculate_ssim`
+Structural Similarity Index. Recons are converted to grayscale, then
+`skimage.metrics.structural_similarity` per trial, averaged. Note: the
+paper observes SSIM diverges from the other metrics (Fig A.7
+discussion); SSIM is high even for blurry "naturalistic" recons that
+miss content.
+
+**AlexNet(2)** / **AlexNet(5)** (↑) — `calculate_alexnet(layers=[2, 5])`
+Two-way-identification accuracy at AlexNet `features.4` (early) and
+`features.11` (mid) layers. Each layer's features are extracted for all
+recons + GT; for each (recon_i, GT_i) trial, count it correct if its
+feature distance to GT_i is smaller than to GT_j for a randomly drawn
+j ≠ i. Chance = 50%.
+
+**Inception** (↑) — `calculate_inception_v3`
+Same two-way-ID, but features taken from `inception_v3.avgpool`
+(ImageNet-pretrained Inception V3). High-level semantic content.
+Chance = 50%.
+
+**CLIP** (↑) — `calculate_clip`
+Two-way-ID using CLIP ViT-L/14 final image embedding (`encode_image`).
+The "purest" semantic metric: tracks how much the recon and GT mean
+the same thing in CLIP's space. Chance = 50%.
+
+**EfficientNet (Eff)** (↓) — `calculate_efficientnet_b1`
+Per-trial **correlation distance** (1 − Pearson) between EfficientNet-B1
+`avgpool` features of recon vs GT, averaged across trials. Lower is
+better. Note this is a *distance*, not a 2-way-ID accuracy.
+
+**SwAV** (↓) — `calculate_swav`
+Same as EfficientNet but features come from
+`facebookresearch/swav:main` ResNet-50's `avgpool`. Self-supervised
+features instead of supervised. Lower = closer to GT.
+
+**two-way identification (2-AFC)**
+The operation behind AlexNet(2)/(5), Inception, CLIP scores. For each
+recon i, compare its feature-space distance to the matching GT_i
+against its distance to a randomly-chosen distractor GT_j. Count as
+correct if the matching distance is smaller. Average across all such
+pairs (typically every j ≠ i, then mean). Chance = 50%.
+Implemented in `utils_mindeye.two_way_identification`.
+
+---
+
+## Paper Table 1 retrieval metrics
+
+**Image retrieval top-1** (↑)
+Brain → image. For each test trial's predicted CLIP embedding (from
+`backbone(ridge(beta))` flattened across the 256-token sequence),
+cosine-similarity against the 50 special515 candidate GT CLIP
+embeddings. Score = fraction of trials whose argmax matches the
+shown image. Chance = 1/50 = 2%. Computed deterministically (no seed
+averaging).
+
+**Brain retrieval top-1** (↑)
+Image → brain. Transpose of the above similarity matrix: for each GT,
+find its argmax over predicted brain embeddings. Score = fraction
+matched. Chance = 2%.
+
+---
+
+## Paper figure normalization recipe
+
+**Min-max normalization (per metric)**
+Used in Figs 3, 4, A.5, A.6, A.7 of Iyer et al. Each metric is
+linearly rescaled so that:
+- `0` = random-COCO-baseline value for that metric
+- `1` = offline-NSD value for that metric (the strongest condition)
+
+For ↑ metrics: `norm = (score − COCO) / (NSD − COCO)`.
+For ↓ metrics (Eff, SwAV): `norm = (COCO − score) / (COCO − NSD)`,
+so higher normalized = better in all cases.
+
+After normalization, **Fig 3** averages within three groups:
+- **Low-level** = mean(PixCorr, SSIM, AlexNet(2), AlexNet(5))
+- **High-level** = mean(Inception, CLIP, Eff, SwAV)
+- **Retrieval** = mean(image_top1, brain_top1)
+
+**Fig A.7** shows the same data without group-averaging — one bar per
+metric per pipeline. SSIM in particular looks anomalously high in
+Fig A.7, motivating the paper's caveat about it.
+
+**Random COCO baseline**
+The 0-anchor for normalization. Constructed by sampling random images
+from COCO (excluding the "shared1000" subset that overlaps with NSD)
+and using them as fake "reconstructions" against the special515 GTs.
+Each metric is computed on these random images; the resulting numbers
+are the published baseline (Tab A.3 row "Random Baseline" gives the
+canonical values). Reported there as: PixCorr 0.014, SSIM 0.277,
+AlexNet(2/5) 50.25/50.99%, Inception 50.37%, CLIP 50.38%,
+Eff 0.982, SwAV 0.655, image-ret 1.6%, brain-ret 1.4%.
+
+---
+
+## Paper architecture (condensed MindEye2)
+
+The paper uses a **deliberately stripped-down** version of MindEye2
+because (a) only ~1 hour of 3T fine-tuning data is available, and
+(b) the offline-NSD MindEye2 architecture overfits at this data scale.
+
+**Condensed MindEye2 (the paper's main 1664-d / SDXL unCLIP variant)**
+- 1024-d shared latent (not 4096)
+- No low-level submodule
+- No img-to-img refinement
+- No text refinement
+- Trained on 7 NSD subjects (excluding subj01 from pretrain), then
+  fine-tuned on one 3T session of sub-005
+
+**SDXL Turbo / 1024-d ablation (Appendix A.8)**
+The paper also tries replacing the CLIP head with **OpenCLIP ViT-H/14
+(1024-d, single token)** and the diffusion stage with **SDXL Turbo**.
+Reconstructions look more naturalistic but are *less faithful* to GT
+across all 10 metrics (Tab A.8). Not in our pipeline.
+
+**`vector_suffix`**
+The conditioning vector returned by `engine.conditioner(batch)["vector"]`
+in `score_full_metrics.load_diffusion_engine`. SDXL unCLIP wants a
+fixed-length vector slot for image-size + crop-coordinate metadata;
+the suffix is computed once at startup and broadcast over all trials.
+
+**`cond_scale`**
+Classifier-free-guidance scale used by `BrainDiffusionPrior.p_sample_loop`.
+Paper uses `cond_scale=1.0` (no extra guidance — the prior already
+produces the conditional image embedding).
+
+**`BrainDiffusionPrior` / `PriorNetwork`**
+The diffusion-prior subnet that maps `backbone` outputs (deterministic
+predicted CLIP token sequence) to a *sampled* CLIP image embedding.
+With `timesteps=20` for the prior sampler. Output is fed into
+`unclip_recon` for the SDXL pixel-space rollout.
+
+**`unclip_recon`**
+`utils_mindeye.unclip_recon(prior_out, engine, vector_suffix, num_samples=1)`
+— the SDXL unCLIP rollout. Runs `num_steps=38` SDXL sampling steps
+(set in `unclip6.yaml`). One full call per trial; ~4.56 s/trial on
+A100, ~5–6 s/trial on GB10. This is the wall-clock dominator for RT.
+
+**MultisubjectModel pretrain**
+`multisubject_sdxlturbo_excludingsubj01_40sess.pth` — the 7-subject
+NSD-pretrain backbone (despite the filename, the paper's main results
+use SDXL unCLIP not Turbo for fine-tuning). Loaded as the starting
+point before 3T fine-tune.
+
+---
+
 ## GLM mechanics
 
 **β / beta**
@@ -198,7 +356,35 @@ same MindEye2 architecture, all on n=50 single-trial first-rep eval:
 | Fast RT | 14.5 s | **36%** | `delay=5` |
 
 **Stimulus delay** in this taxonomy = wall-clock seconds elapsed after
-stimulus onset before the GLM is fit. ~7.9 s = ~5 TRs at TR = 1.5 s.
+stimulus onset before the GLM is fit. The Methods §"Pipeline Variations"
+quotes ~7.9 s for Fast / ~29 s for Slow / end-of-run for EoR.
+
+**Delay value → tier mapping (Rishab's `all_betas_ses-03_all_runs_delay{N}.npy`)**
+
+⚠️ The `delay=N` parameter is in **TRIALS, not TRs and not seconds** —
+this isn't documented in the paper text and is the most confusing
+convention in the deployed pipeline (see `docs/table1_reproducibility_recipe.md`
+Pitfall #9). Each trial is ~4 s (3 s stim + 1 s ISI). Mapping:
+
+| `delay` (trials) | post-stim s | post-stim TRs | Tier name (Tab 1) | Used for |
+|---|---|---|---|---|
+| **0** | 7.5 | ~5 | **Fast RT** (default) | Tab 1 + Fig 4 |
+| 1 | 11.5 | ~8 | — | Fig 4 |
+| 3 | 19.5 | ~13 | — | Fig 4 |
+| **5** | 27.5 | ~18 | **Slow RT** (paper Tab 2 reports 29.5±2.6 s) | Tab 1 + Fig 4 |
+| 10 | 47.5 | ~32 | — | Fig 4 |
+| 15 | 67.5 | ~45 | — | Fig 4 |
+| 20 | 87.5 | ~58 | — | Fig 4 |
+| **63** | ~260 (or capped at run end) | ~190 capped | **End-of-Run RT** | Tab 1 + Fig 4 |
+
+For trial `i` decoded at delay=N, the GLM fit consumes BOLD up to
+`onset_TR_{i+N} + ~5` (HRF peak of the *future* trial we wait for).
+That's why EoR's stim-delay σ=80 s (Tab 2) — at delay=63 the wait is
+calendar-fixed to the last trial in the run, so trial 0 gets ~250 s and
+trial 62 gets ~5 s.
+
+The delay-sweep figure (Fig 4) consumes all 8 delays; Table 1 only
+reports the three named tiers.
 
 The "10 pp gap" the Discussion focuses on is **Offline 3T 76% − End-of-Run RT 66%**.
 Both have all the within-run BOLD; the difference is

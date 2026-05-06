@@ -227,6 +227,126 @@ def load_gt_images(image_names: np.ndarray, device: str) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Cached perceptual extractors — load once, reuse across (cell × seed) loop.
+# Mirrors logic in utils_mindeye.calculate_alexnet/inception/clip/eff/swav,
+# but each model is instantiated exactly once per process. Saves ~10–15
+# min/seed of repeated `torchvision.models.alexnet(...).to(device)` etc.
+# ---------------------------------------------------------------------------
+def load_metric_extractors(device: str) -> dict:
+    """Load AlexNet/Inception/CLIP/EffNet/SwAV once."""
+    print("[3a] caching perceptual extractors", flush=True)
+    from torchvision.models import (
+        alexnet, AlexNet_Weights,
+        inception_v3, Inception_V3_Weights,
+        efficientnet_b1, EfficientNet_B1_Weights,
+    )
+    from torchvision.models.feature_extraction import create_feature_extractor
+    import clip as clip_torch
+
+    imagenet = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                      std=[0.229, 0.224, 0.225])
+
+    print("  alexnet", flush=True)
+    alex = create_feature_extractor(
+        alexnet(weights=AlexNet_Weights.DEFAULT),
+        return_nodes=["features.4", "features.11"],
+    ).to(device).eval().requires_grad_(False)
+    pre_alex = transforms.Compose([
+        transforms.Resize(256, interpolation=transforms.InterpolationMode.BILINEAR),
+        imagenet,
+    ])
+
+    print("  inception_v3", flush=True)
+    incep = create_feature_extractor(
+        inception_v3(weights=Inception_V3_Weights.DEFAULT),
+        return_nodes=["avgpool"],
+    ).to(device).eval().requires_grad_(False)
+    pre_incep = transforms.Compose([
+        transforms.Resize(342, interpolation=transforms.InterpolationMode.BILINEAR),
+        imagenet,
+    ])
+
+    print("  clip ViT-L/14", flush=True)
+    clip_model, _ = clip_torch.load("ViT-L/14", device=device)
+    clip_model.eval().requires_grad_(False)
+    pre_clip = transforms.Compose([
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
+                              std=[0.26862954, 0.26130258, 0.27577711]),
+    ])
+
+    print("  efficientnet_b1", flush=True)
+    eff = create_feature_extractor(
+        efficientnet_b1(weights=EfficientNet_B1_Weights.DEFAULT),
+        return_nodes=["avgpool"],
+    ).to(device).eval().requires_grad_(False)
+    pre_eff = transforms.Compose([
+        transforms.Resize(255, interpolation=transforms.InterpolationMode.BILINEAR),
+        imagenet,
+    ])
+
+    print("  swav resnet50", flush=True)
+    swav = torch.hub.load("facebookresearch/swav:main", "resnet50")
+    swav = create_feature_extractor(swav, return_nodes=["avgpool"]).to(device)
+    swav.eval().requires_grad_(False)
+    pre_swav = transforms.Compose([
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.BILINEAR),
+        imagenet,
+    ])
+
+    return {
+        "alex":  (alex,  pre_alex),
+        "incep": (incep, pre_incep),
+        "clip":  (clip_model.encode_image, pre_clip),
+        "eff":   (eff,   pre_eff),
+        "swav":  (swav,  pre_swav),
+    }
+
+
+def _correlation_distance_per_trial(model, preprocess, recons, gt) -> float:
+    """Mean per-trial (1 − Pearson) on `avgpool` features. Used for Eff + SwAV."""
+    import scipy as sp
+    with torch.no_grad():
+        f_gt = model(preprocess(gt))["avgpool"]
+        f_rc = model(preprocess(recons))["avgpool"]
+    f_gt = f_gt.reshape(len(f_gt), -1).cpu().numpy()
+    f_rc = f_rc.reshape(len(f_rc), -1).cpu().numpy()
+    dists = np.array([sp.spatial.distance.correlation(f_gt[i], f_rc[i])
+                       for i in range(len(f_gt))])
+    return float(dists.mean())
+
+
+def compute_8_metrics(recons: torch.Tensor, gt: torch.Tensor,
+                      extractors: dict) -> dict:
+    """Compute all 8 reconstruction metrics using cached extractors."""
+    from utils_mindeye import (calculate_pixcorr, calculate_ssim,
+                                two_way_identification)
+
+    alex,  pre_alex  = extractors["alex"]
+    incep, pre_incep = extractors["incep"]
+    clip_fwd, pre_clip = extractors["clip"]
+    eff,   pre_eff   = extractors["eff"]
+    swav,  pre_swav  = extractors["swav"]
+
+    out = {}
+    out["pixcorr"]   = float(calculate_pixcorr(recons, gt))
+    out["ssim"]      = float(calculate_ssim(recons, gt))
+    out["alexnet2"]  = float(two_way_identification(
+        recons, gt, alex, pre_alex, "features.4"))
+    out["alexnet5"]  = float(two_way_identification(
+        recons, gt, alex, pre_alex, "features.11"))
+    out["inception"] = float(two_way_identification(
+        recons, gt, incep, pre_incep, "avgpool"))
+    out["clip"]      = float(two_way_identification(
+        recons, gt, clip_fwd, pre_clip, None))
+    out["efficientnet"] = _correlation_distance_per_trial(
+        eff, pre_eff, recons, gt)
+    out["swav"]         = _correlation_distance_per_trial(
+        swav, pre_swav, recons, gt)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Reconstruction (5-seed averaging happens at the metric level)
 # ---------------------------------------------------------------------------
 def reconstruct_one_seed(model, diffusion_engine, vector_suffix,
@@ -251,7 +371,7 @@ def reconstruct_one_seed(model, diffusion_engine, vector_suffix,
 # Main scoring routine
 # ---------------------------------------------------------------------------
 def score_cell(cell: str, model, clip_img_embedder,
-                diffusion_engine, vector_suffix,
+                diffusion_engine, vector_suffix, extractors: dict,
                 n_seeds: int, first_rep: bool, device: str) -> dict:
     print(f"\n=== {cell} ===", flush=True)
     betas_all, ids_all = load_cell(cell)
@@ -295,41 +415,31 @@ def score_cell(cell: str, model, clip_img_embedder,
               flush=True)
     all_recons = torch.stack(all_recons, 0)                          # (S, N, 3, H, W)
 
-    # ---- metrics ----------------------------------------------------------
-    from utils_mindeye import (
-        calculate_pixcorr, calculate_ssim, calculate_alexnet,
-        calculate_inception_v3, calculate_clip, calculate_efficientnet_b1,
-        calculate_swav,
-    )
-
+    # ---- metrics ---------------------------------------------------------
+    # Perceptual extractors (AlexNet/Inception/CLIP/Eff/SwAV) loaded once at
+    # startup; recons must be float32 because their weights are float32.
     metrics = {
         "pixcorr": [], "ssim": [], "alexnet2": [], "alexnet5": [],
         "inception": [], "clip": [], "efficientnet": [], "swav": [],
     }
+    gt_f = gt_imgs.float()
     for s in range(n_seeds):
-        recons_s = all_recons[s].to(device).to(torch.float16)
-        gt = gt_imgs.to(torch.float16)
-        metrics["pixcorr"].append(float(calculate_pixcorr(recons_s, gt)))
-        metrics["ssim"].append(float(calculate_ssim(recons_s, gt)))
-        a2, a5 = calculate_alexnet(recons_s, gt)
-        metrics["alexnet2"].append(float(a2))
-        metrics["alexnet5"].append(float(a5))
-        metrics["inception"].append(float(calculate_inception_v3(recons_s, gt)))
-        metrics["clip"].append(float(calculate_clip(recons_s, gt)))
-        metrics["efficientnet"].append(
-            float(calculate_efficientnet_b1(recons_s, gt))
-        )
-        metrics["swav"].append(float(calculate_swav(recons_s, gt)))
-        print(f"  seed {s + 1} metrics: pixcorr={metrics['pixcorr'][-1]:.3f}  "
-              f"alex2={metrics['alexnet2'][-1]:.3f}  "
-              f"clip={metrics['clip'][-1]:.3f}", flush=True)
+        recons_s = all_recons[s].to(device).float()
+        per_seed = compute_8_metrics(recons_s, gt_f, extractors)
+        for k in metrics:
+            metrics[k].append(per_seed[k])
+        print(f"  seed {s + 1} metrics: pixcorr={per_seed['pixcorr']:.3f}  "
+              f"alex2={per_seed['alexnet2']:.3f}  "
+              f"clip={per_seed['clip']:.3f}", flush=True)
 
-    # Retrieval (deterministic — no seed averaging)
+    # Retrieval (deterministic — no seed averaging). clip_voxels came out of
+    # the backbone under autocast(fp16); cast to fp32 before matmul against
+    # the fp32 GT CLIP embeddings to avoid the second dtype mismatch.
     with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
         gt_emb = clip_img_embedder(gt_imgs).float().cpu()             # (N, 256, 1664)
         gt_flat = nn.functional.normalize(gt_emb.reshape(len(gt_emb), -1), dim=-1)
         cv_flat = nn.functional.normalize(
-            clip_voxels.cpu().reshape(len(clip_voxels), -1), dim=-1,
+            clip_voxels.float().cpu().reshape(len(clip_voxels), -1), dim=-1,
         )
         # Image retrieval: brain → image (find correct GT given brain pred)
         sim = (cv_flat @ gt_flat.T).numpy()                          # (N, N)
@@ -388,12 +498,15 @@ def main():
     diffusion_engine, vector_suffix = load_diffusion_engine(device)
     clip_img_embedder = load_clip_img_embedder(device)
 
+    extractors = load_metric_extractors(device)
+
     print("\n[3] scoring cells", flush=True)
     out = []
     for cell in args.cells:
         try:
             r = score_cell(cell, model, clip_img_embedder, diffusion_engine,
-                            vector_suffix, args.n_seeds, args.first_rep, device)
+                            vector_suffix, extractors, args.n_seeds,
+                            args.first_rep, device)
             out.append(r)
         except Exception as e:
             print(f"  ERROR on {cell}: {e}", flush=True)
