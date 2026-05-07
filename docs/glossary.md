@@ -375,7 +375,7 @@ Pitfall #9). Each trial is ~4 s (3 s stim + 1 s ISI). Mapping:
 | 10 | 47.5 | ~32 | — | Fig 4 |
 | 15 | 67.5 | ~45 | — | Fig 4 |
 | 20 | 87.5 | ~58 | — | Fig 4 |
-| **63** | ~260 (or capped at run end) | ~190 capped | **End-of-Run RT** | Tab 1 + Fig 4 |
+| **63** | ~260 (or capped at run end) | 192 capped | **End-of-Run RT** | Tab 1 + Fig 4 |
 
 For trial `i` decoded at delay=N, the GLM fit consumes BOLD up to
 `onset_TR_{i+N} + ~5` (HRF peak of the *future* trial we wait for).

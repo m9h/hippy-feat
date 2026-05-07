@@ -24,7 +24,7 @@ What **varies between rows**:
 | Offline NSD | same | same | full-run | first-rep only |
 | **Offline 3T (avg 3 reps)** | sub-005 fmriprep | GLMsingle Stages 1+2+3, full session | full-run | **avg of 3 reps** |
 | **Offline 3T (single first-rep)** | same | same | full-run | **first-rep only** |
-| End-of-run RT | rtmotion (per-TR MCFLIRT + flirt cross-session) | nilearn `FirstLevelModel(noise_model='ar1', hrf_model='glover', drift_model='cosine', drift_order=1, high_pass=0.01, signal_scaling=False)` LSS, refit per trial | full run (~190 TRs) | first-rep only |
+| End-of-run RT | rtmotion (per-TR MCFLIRT + flirt cross-session) | nilearn `FirstLevelModel(noise_model='ar1', hrf_model='glover', drift_model='cosine', drift_order=1, high_pass=0.01, signal_scaling=False)` LSS, refit per trial | full run (192 TRs) | first-rep only |
 | Slow RT | same | same | onset_TR + ~20 TRs (~30 s post-stim) | first-rep only |
 | Fast RT | same | same | onset_TR + ~5 TRs (~8 s post-stim) | first-rep only |
 
@@ -102,7 +102,7 @@ Conversion to TR units (TR=1.5 s):
 | 10 | 47.5 | ~32 | (intermediate) |
 | 15 | 67.5 | ~45 | (intermediate) |
 | 20 | 87.5 | ~58 | (intermediate) |
-| 63 | 259.5 (or capped at run end) | ~190 capped | **End-of-Run RT** |
+| 63 | 259.5 (or capped at run end) | 192 capped | **End-of-Run RT** |
 
 For trial `i` decoded at delay=N:
 
