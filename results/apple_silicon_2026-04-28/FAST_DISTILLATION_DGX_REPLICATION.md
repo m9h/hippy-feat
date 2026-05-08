@@ -75,3 +75,54 @@ The student naturally tracks the broken teacher.
 
 DGX result JSON: `/data/derivatives/rtmindeye_paper/task_2_1_betas/fast_distill_results_dgx.json`
 DGX log: `/data/derivatives/rtmindeye_paper/logs/fast-distill-1099.out`
+
+## UPDATE 2026-05-08: diagnostic 1100 — root cause found
+
+`scripts/diagnose_slow_betas_retrieval.py` swept 6 cells × 2 ckpts × 3 z-policies
+to find which (β source × z-policy × ckpt) combination matches the apple-silicon
+54%/58% Slow anchor.
+
+**Result: our DGX `_inclz` files from job 1090 are corrupted.** Same job's `_raw`
+files work fine.
+
+```
+fold-0 retrieval (50-trial first-rep):
+  RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_inclz   native       Image= 4%  Brain= 2%   ← broken
+  RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw     native       Image=42%  Brain=44%
+  RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw     session_z    Image=50%  Brain=52%   ← close to AS 54/58
+  RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw     causal_cz    Image=48%  Brain=56%
+  RT_paper_RLS_EoR_K7CSFWM_HP_e1_inclz          native       Image= 2%  Brain= 0%   ← also broken
+  Paper_RT_actual_delay5                        session_z    Image=50%  Brain=54%   ← paper-canonical Slow ≈ AS
+
+fold-10 retrieval:
+  RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw     session_z    Image=62%  Brain=66%
+  RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw     causal_cz    Image=64%  Brain=64%
+  Paper_RT_actual_delay5                        session_z    Image=62%  Brain=64%
+```
+
+So *our* `_raw` + (any sensible z-policy) gives 48-64% Image — the apple-silicon
+54%/58% number sits squarely in the middle of this range.
+
+Hypothesis 2 from the original report (voxel-axis ordering) is **REJECTED** —
+the `_raw` βs give the right answer, so voxel ordering is correct. The
+problem is exclusively in the post-processing path that produces the `_inclz`
+file: somewhere in `scripts/run_streaming_rls_glm.py`'s post-extraction step
+the z-scored output is corrupted (likely a sign or ordering bug after
+`apply inclusive cum-z`). To investigate later — for now, the fix is to load
+`_raw` and z-score inline.
+
+**Patch applied to `train_fast_distill_from_slow.py`** (next commit) — load
+`_raw` + `session_zscore()` instead of the broken `_inclz`. Re-running as
+job 1101.
+
+### For the Apple agent
+
+Original three triage asks are no longer needed — DGX root cause was a local
+post-processing bug, not a Mac/DGX divergence in the upstream β extraction.
+Single ask remaining:
+
+- Confirm what z-scoring policy your `_inclz` cells were saved with —
+  session-z (μ/σ over all 693 trials), causal-exclusive cum-z, or inclusive-
+  causal cum-z? `scripts/diagnose_slow_betas_retrieval.py:80-94` has DGX
+  implementations of session_z and causal_cz; if your inclusive_causal isn't
+  one of those, please share the exact formula so we can match.

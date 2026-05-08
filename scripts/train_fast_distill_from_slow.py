@@ -164,11 +164,14 @@ fast_ids = np.load(PREREG / "Paper_RT_actual_delay0_ses-03_trial_ids.npy",
 fast_ids = np.asarray([str(t) for t in fast_ids])
 fast_b = session_zscore(fast_raw)
 
-# Slow teacher input — already _inclz from job 1090.
-slow_b = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_inclz_ses-03_betas.npy")
-slow_ids = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_inclz_ses-03_trial_ids.npy",
+# Slow teacher input — load `_raw` and apply session_zscore inline.
+# The `_inclz` files from job 1090 are corrupted (job 1100 diagnostic:
+# fold-0 retrieval drops to 4%/2% on _inclz vs 50%/52% on _raw+session_z).
+slow_raw = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_betas.npy")
+slow_ids = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_trial_ids.npy",
                     allow_pickle=True)
 slow_ids = np.asarray([str(t) for t in slow_ids])
+slow_b = session_zscore(slow_raw)
 
 assert fast_b.shape == slow_b.shape, f"shape mismatch: {fast_b.shape} vs {slow_b.shape}"
 assert (fast_ids == slow_ids).all(), "Fast and Slow trial_ids must align"
@@ -343,7 +346,7 @@ out_path.write_text(json.dumps({
     "device": device,
     "ckpt": str(CKPT),
     "fast_source": "Paper_RT_actual_delay0 (Rishab pre-saved) + session_zscore",
-    "slow_source": "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_inclz (job 1090)",
+    "slow_source": "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw (job 1090) + session_zscore (job 1100 diagnostic confirmed _inclz files broken)",
     "n_train": int(X_tr.shape[0]), "n_val": int(X_val.shape[0]),
     "n_test": int(test_in.shape[0]),
     "baseline_image": base_img, "baseline_brain": base_bra,
