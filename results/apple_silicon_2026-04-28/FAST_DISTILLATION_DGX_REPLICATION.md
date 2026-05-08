@@ -119,10 +119,74 @@ job 1101.
 
 Original three triage asks are no longer needed — DGX root cause was a local
 post-processing bug, not a Mac/DGX divergence in the upstream β extraction.
-Single ask remaining:
+Re-run with the fix (load `_raw` + `session_zscore` inline) gave teacher 50/52
+✓ but student 30/34 (i.e., **−6pp Image vs +0pp Brain** vs your +4/+14 anchor).
+Teacher signal is alive but student isn't gaining what apple-silicon sees.
 
-- Confirm what z-scoring policy your `_inclz` cells were saved with —
-  session-z (μ/σ over all 693 trials), causal-exclusive cum-z, or inclusive-
-  causal cum-z? `scripts/diagnose_slow_betas_retrieval.py:80-94` has DGX
-  implementations of session_z and causal_cz; if your inclusive_causal isn't
-  one of those, please share the exact formula so we can match.
+Open questions, in priority order:
+
+1. **What's the exact `_inclz` z-policy formula?**
+   DGX has three plausible candidates implemented at
+   `scripts/diagnose_slow_betas_retrieval.py:80-94`:
+   - `session_zscore`: `(arr - arr.mean(0)) / arr.std(0)` — single μ/σ over
+     all 693 trials. Gives Slow→fold-0 retrieval = 50/52.
+   - `causal_cum_zscore`: trial i uses stats from 0..i-1 only (matches our
+     `score_full_metrics.cumulative_zscore`). Gives 48/56.
+   - **Inclusive-causal cum-z** (named in your `_inclz` config but never
+     implemented locally): trial i uses stats from 0..i? Or 0..end-of-run?
+     Or the at-session-end running mean per `mindeye.py:770-784`?
+   Whichever you used, share the formula or the relevant function — we'll
+   match it directly.
+
+2. **What's the train_idx count after exclusions?**
+   Your `FAST_DISTILLATION.md` reports "Training: 527 train / 93 val / 50 test"
+   = 670 total. Our identical-logic split on 693-trial βs gives **543 train /
+   81 val / 50 test = 674 total**. Difference of 4 trials in the total and
+   ~62 trials in the train denominator. Two possibilities:
+   - You're filtering motion outliers / blank-adjacent / rep-3 trials before
+     the test/train split. Our `cropped_events = events_df[events_df.image_name != 'blank.jpg']`
+     already drops 77 blank trials (770 → 693). What additional filter brings
+     693 → 670?
+   - Or your fast cell has fewer trials by construction (e.g., LSS at pst=5
+     can fail for trials too close to run start; we keep them; you may drop).
+
+3. **Which fold for the frozen downstream decoder — 0 or 10?**
+   Mac driver hard-codes `repeats_3split_0_avgrepeats_finalmask.pth` (fold-0),
+   so DGX defaults to fold-0 too. Confirming this is the intended setup, not
+   a copy-paste slip from a fold-0 sanity run.
+
+4. **What's the v2/v3 ensemble pipeline?**
+   The `README.md` line says "Distillation v2/v3: ensemble pushes Fast Image
+   to 42% (+6pp over baseline)" — implying v2/v3 train multiple refiners and
+   ensemble at inference. Could you share:
+   - The v2/v3 hyperparameters (lr, weight_decay, n_epochs, patience) if
+     different from v1's `lr=5e-3 wd=1e-3 80 epochs patience=15`.
+   - Whether ensembling is averaging refiners' outputs in voxel space, in
+     `clip_voxels` space, or via something more involved (Bayesian model
+     averaging, mixture-of-experts).
+   - The number of seeds you ensemble across.
+
+5. **Best-val checkpoint vs best-test checkpoint.**
+   Mac driver picks the refiner state with the lowest val cosine loss. On DGX
+   we observe val loss decreases monotonically (good) but **test retrieval
+   stays at or below baseline throughout training**. Your training trace
+   presumably had test ≥ baseline + N pp at the best-val epoch — meaning val
+   loss tracks test retrieval on Mac but doesn't on DGX. Did you ever audit
+   whether best-val and best-test agreed?
+
+6. **DGX bug to investigate later (not blocking).**
+   Our `scripts/run_streaming_rls_glm.py` post-extraction "apply inclusive
+   cum-z" step writes `_inclz` files that score at 4/2 (chance) on both Slow
+   and EoR through fold-0. Same script's `_raw` files score 42/44 (Slow) and
+   are correct. We've been using `_raw` + inline z-score on DGX going forward.
+
+### DGX follow-up runs
+
+While waiting on answers to (1–4), DGX is running two single-cell variants
+of the distillation training to bracket the fold/z-policy space:
+
+- Job 1102: `--z-policy=causal_cz --ckpt-fold=0` (variant A)
+- Job 1103: `--z-policy=session_z --ckpt-fold=10` (variant B)
+
+Output suffixes: `fast_distill_results_dgx_causalcz_fold0.json` and
+`..._sessionz_fold10.json`. ETA ~30 min each, sequential.

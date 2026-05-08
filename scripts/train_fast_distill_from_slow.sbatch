@@ -18,10 +18,17 @@ if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
     docker load -i "$TAR"
 fi
 
+ZPOLICY=${ZPOLICY:-session_z}
+CKPT_FOLD=${CKPT_FOLD:-0}
+OUT_SUFFIX=${OUT_SUFFIX:-}
+
 docker run --rm --gpus all \
     -v /home/mhough:/home/mhough \
     -v /data:/data \
     -w /home/mhough/dev/hippy-feat \
+    -e ZPOLICY="$ZPOLICY" \
+    -e CKPT_FOLD="$CKPT_FOLD" \
+    -e OUT_SUFFIX="$OUT_SUFFIX" \
     "$IMAGE" \
     bash -c "
         rm -rf /usr/local/lib/python3.12/dist-packages/transformer_engine \

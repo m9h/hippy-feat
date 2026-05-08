@@ -29,8 +29,10 @@ Apple-silicon ses-03 result: 36 → 40% Image (+4 pp), 34 → 48% Brain (+14 pp)
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 import warnings
@@ -59,11 +61,23 @@ import mindeye_retrieval_eval as M                            # noqa: E402
 
 warnings.filterwarnings("ignore")
 
-CKPT = Path(
-    "/data/3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
-)
+CKPT_BY_FOLD = {
+    0: Path("/data/3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"),
+    10: Path("/data/3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_10_avgrepeats_finalmask_epochs_150/last.pth"),
+}
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--z-policy", choices=["session_z", "causal_cz"],
+                 default=os.environ.get("ZPOLICY", "session_z"))
+ap.add_argument("--ckpt-fold", type=int, choices=[0, 10],
+                 default=int(os.environ.get("CKPT_FOLD", "0")))
+ap.add_argument("--out-suffix", default=os.environ.get("OUT_SUFFIX", ""))
+args = ap.parse_args()
+CKPT = CKPT_BY_FOLD[args.ckpt_fold]
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"=== device={device}  torch={torch.__version__} ===", flush=True)
+print(f"=== device={device}  torch={torch.__version__}  "
+      f"z_policy={args.z_policy}  ckpt_fold={args.ckpt_fold} ===", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +141,24 @@ def session_zscore(arr: np.ndarray) -> np.ndarray:
     return ((arr - mu) / sd).astype(np.float32)
 
 
+def causal_cum_zscore(arr: np.ndarray) -> np.ndarray:
+    """Strict causal cumulative z-score — trial i uses stats from 0..i-1 only.
+    Matches scripts/score_full_metrics.cumulative_zscore."""
+    out = np.zeros_like(arr, dtype=np.float32)
+    for i in range(arr.shape[0]):
+        if i < 2:
+            mu = arr[:max(i, 1)].mean(0, keepdims=True) if i > 0 else 0.0
+            sd = 1.0
+        else:
+            mu = arr[:i].mean(0, keepdims=True)
+            sd = arr[:i].std(0, keepdims=True) + 1e-8
+        out[i] = (arr[i] - mu) / sd
+    return out
+
+
+ZSCORE = {"session_z": session_zscore, "causal_cz": causal_cum_zscore}[args.z_policy]
+
+
 def load_gt_from_cache(image_paths: list[Path]) -> np.ndarray:
     """Load CLIP-image-token embeddings for `image_paths` from the existing
     gt_cache. Falls back to error if any are missing — apple-silicon already
@@ -162,7 +194,7 @@ fast_raw = np.load(PREREG / "Paper_RT_actual_delay0_ses-03_betas.npy")
 fast_ids = np.load(PREREG / "Paper_RT_actual_delay0_ses-03_trial_ids.npy",
                     allow_pickle=True)
 fast_ids = np.asarray([str(t) for t in fast_ids])
-fast_b = session_zscore(fast_raw)
+fast_b = ZSCORE(fast_raw)
 
 # Slow teacher input — load `_raw` and apply session_zscore inline.
 # The `_inclz` files from job 1090 are corrupted (job 1100 diagnostic:
@@ -171,7 +203,7 @@ slow_raw = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_be
 slow_ids = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_trial_ids.npy",
                     allow_pickle=True)
 slow_ids = np.asarray([str(t) for t in slow_ids])
-slow_b = session_zscore(slow_raw)
+slow_b = ZSCORE(slow_raw)
 
 assert fast_b.shape == slow_b.shape, f"shape mismatch: {fast_b.shape} vs {slow_b.shape}"
 assert (fast_ids == slow_ids).all(), "Fast and Slow trial_ids must align"
@@ -340,13 +372,16 @@ print(f"  student (Fast β + refiner, best-val):     "
 print(f"  Δ vs baseline: Image={(final_img - base_img) * 100:+.1f}pp  "
       f"Brain={(final_bra - base_bra) * 100:+.1f}pp")
 
-out_path = LOCAL / "task_2_1_betas" / "fast_distill_results_dgx.json"
+suffix = f"_{args.out_suffix}" if args.out_suffix else ""
+out_path = LOCAL / "task_2_1_betas" / f"fast_distill_results_dgx{suffix}.json"
 out_path.write_text(json.dumps({
-    "method": "Cross-latency distillation (DGX port): Fast student ← Slow teacher (streaming GLM Slow + fold-0)",
+    "method": "Cross-latency distillation (DGX port): Fast student ← Slow teacher (streaming GLM Slow + fold-N)",
     "device": device,
     "ckpt": str(CKPT),
-    "fast_source": "Paper_RT_actual_delay0 (Rishab pre-saved) + session_zscore",
-    "slow_source": "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw (job 1090) + session_zscore (job 1100 diagnostic confirmed _inclz files broken)",
+    "ckpt_fold": args.ckpt_fold,
+    "z_policy": args.z_policy,
+    "fast_source": f"Paper_RT_actual_delay0 (Rishab pre-saved) + {args.z_policy}",
+    "slow_source": f"RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw (job 1090) + {args.z_policy} (job 1100 diagnostic confirmed _inclz files broken)",
     "n_train": int(X_tr.shape[0]), "n_val": int(X_val.shape[0]),
     "n_test": int(test_in.shape[0]),
     "baseline_image": base_img, "baseline_brain": base_bra,
