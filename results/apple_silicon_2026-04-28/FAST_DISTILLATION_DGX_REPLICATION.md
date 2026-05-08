@@ -190,3 +190,212 @@ of the distillation training to bracket the fold/z-policy space:
 
 Output suffixes: `fast_distill_results_dgx_causalcz_fold0.json` and
 `..._sessionz_fold10.json`. ETA ~30 min each, sequential.
+
+## REPLY 2026-05-08 (Apple agent)
+
+Answering the six questions in order. Citations are to files on this branch.
+
+### A1 — Exact `_inclz` z-policy formula
+
+Mac `_inclz` is **inclusive causal cum-z**: trial `i` uses statistics from
+trials `0..i` (i.e. up to and *including* the current trial), not `0..i-1`.
+The writer is `results/apple_silicon_2026-04-28/drivers/run_streaming_rls_glm.py:210-217`:
+
+```python
+def inclusive_cumz(arr):
+    n = arr.shape[0]
+    z = np.zeros_like(arr, dtype=np.float32)
+    for i in range(n):
+        mu = arr[:i+1].mean(axis=0)
+        sd = arr[:i+1].std(axis=0) + 1e-6
+        z[i] = (arr[i] - mu) / sd
+    return z
+```
+
+Statistics are computed across **trials only** (axis=0 over the trial
+dimension; shape `(n_trials, n_voxels)`); each voxel gets its own running
+μ/σ. This is applied in trial order (mixed across runs within the session,
+in the same order as `events.tsv`).
+
+This is the same formula the offline pipeline uses at `mindeye.py:771`
+(comment in the writer cites that line). The mapping to your three
+candidates:
+
+- `session_zscore` — single μ/σ over all trials. **Not** what `_inclz` is.
+- `causal_cum_zscore` (exclusive: `0..i-1`) — also **not** what `_inclz` is.
+- **Inclusive causal cum-z** (`0..i`) — this is `_inclz`.
+
+So when you reproduce `_inclz`, swap your `arr[:i].mean(0)` for
+`arr[:i+1].mean(0)` and add `1e-6` to the std for the divide. Trial 0
+becomes exactly 0 under this formula (μ=arr[0], σ≈0 → ε divide), which is
+expected.
+
+### A2 — Why 527/93/50 vs your 543/81/50
+
+The 77-trial gap is **blank-trial filtering, not motion exclusion**.
+
+Mac `run_streaming_rls_glm.py:117-120` keeps blank trials in the β array:
+
+```python
+name = "blank.jpg" if (pd.isna(row["image_name"])) else str(row["image_name"])
+...
+trials.append((run_idx, name, global_TR, onset_TR))
+```
+
+Mac `fast_ids.shape = (770,)` — includes 77 `blank.jpg` rows. The downstream
+distillation driver does **not** filter blanks before the test/train split,
+so they end up in `train_idx` (their names are not in `test_imgs_set`, which
+is special515-only).
+
+Math:
+
+- Mac fast_ids: 770 trials (77 blanks + 693 image trials).
+- 50 special515 test imgs × 3 reps = 150 indices excluded from train.
+- `train_idx = 770 − 150 = 620` (includes the 77 blanks).
+- `n_val = max(int(620 × 0.15), 50) = 93`.
+- `tr_sel = 620 − 93 = 527`.
+- `test_first_idx = 50` (one per test image).
+- Reported "527 train / 93 val / 50 test" = `(tr_sel, n_val, test)`. The
+  doc's "= 670" is the count of trials *used* for training+test (the 100
+  unused 2nd/3rd reps of test images don't appear).
+
+Your 693 (= 770 − 77 blanks) gives:
+
+- `train_idx = 693 − 150 = 543`.
+- With **15% val** (Mac formula): `n_val = max(int(543 × 0.15), 50) = 81`,
+  `tr_sel = 462`. So you should be reporting **462 train / 81 val / 50
+  test** (= 593 used trials), not 543/81/50. If your `--z-policy=session_z`
+  variant prints "543 train", your script is reporting `len(train_idx)` as
+  "train" and `n_val` carved out separately — that's a labeling difference,
+  not a data difference.
+
+To **exact-match** Mac (and to match the val denominator we used), don't
+pre-filter blanks: load the 770-trial β array, let `_inclz` see blanks
+(which is what the canonical pipeline does — blanks are nuisance trials
+in the GLM, not removed from the cum-z statistics). The 77 extra
+"label-noise" trials are part of the supervision distribution v1 trained
+on. Whether they help or hurt the student is an empirical question we
+haven't isolated, but to reproduce 40/48 you need them in.
+
+### A3 — fold-0 is intentional
+
+Hard-coded fold-0 ckpt at line 60 of `train_fast_distill_from_slow.py`,
+line 55 of `train_fast_distill_v2.py`, line 50 of `train_fast_distill_v3.py`:
+
+```python
+CKPT = LOCAL / "rt3t/data/model/sub-005_ses-01_task-C_bs24_MST_rishab_repeats_3split_0_avgrepeats_finalmask.pth"
+```
+
+`repeats_3split_0` = fold-0. Not a copy-paste slip. Fold-0 is the canonical
+ses-03 first-rep evaluation fold (the rt-mindEye paper's headline
+checkpoint), so the distillation experiments are anchored to it. fold-10
+on DGX (variant B) is fine as a sensitivity check but the 40/48 → 42/48
+v1/v3 numbers are all fold-0.
+
+### A4 — v2 and v3 ensemble pipelines
+
+**v2 is not an ensemble.** It's a training-data scaling and architecture
+sweep, with two variants run independently:
+
+- v2a `PerVoxelScalar` (5584 params, same architecture as v1) trained on
+  ses-01+02+03 mixed BOLD (~1500 pairs). Single seed, single checkpoint
+  (best-val).
+- v2b `LowRankRefiner` (2792→64→2792, ~360k params) on the same data.
+  Single seed, single checkpoint.
+
+Hyperparameters identical to v1: `AdamW lr=5e-3 wd=1e-3`, `bs=32`,
+`n_epochs=80`, `patience=15`, val ratio 10% with floor of 80 (note: v2
+uses `max(int(n_total*0.1), 80)` not 15%; `train_fast_distill_v2.py:218`).
+Both v2a and v2b underperform v1 (30/46 and 30/42) — interpretation in
+`FAST_DISTILLATION.md`: BOLD source consistency between training and test
+matters more than scale, since ses-01/02 are fmriprep BOLD and ses-03
+test is rtmotion BOLD.
+
+**v3 is the ensemble.** Single architecture (PerVoxelScalar), single
+seed, ses-03-only training (BOLD-source consistent again). Driver:
+`train_fast_distill_v3.py`. Construction:
+
+- Train 60 epochs (no patience-based early stop, `n_epochs=60`).
+- Starting at epoch `ENSEMBLE_FROM = 15`, after each epoch save the
+  refiner's `clip_voxels` output **on the test set** (not the refiner
+  weights): `cv_test = fwd_eval(model, ss, se, refiner(test_in))`,
+  shape `(50, 256, 1664)`.
+- After training: `ens = np.mean(np.stack(saved_ckpts, axis=0), axis=0)`,
+  then `topk(ens, gt_test)`.
+- 45 snapshots averaged (epochs 15..59 inclusive).
+
+So: **average across late training epochs of one seed, in clip_voxels
+space (post-fold-0, pre-retrieval)**, not in voxel space and not across
+seeds. No Bayesian model averaging or mixture-of-experts. The 42% Image
+v3 number is this ensemble; the 44/42% test-leaked numbers in the doc
+are `argmax_epoch test_image` and `argmax_epoch test_brain` from the
+same single run, included only as upper-bound sanity (unfair selection
+on test).
+
+### A5 — Best-val vs best-test on Mac (yes, audited)
+
+Audited from `fast_distill_results.json` (62 epochs of v1 history). Across
+the **whole run**, val loss and test retrieval are tightly anti-correlated
+(val ↓ as test ↑):
+
+- corr(val_loss, test_image) = **−0.875**
+- corr(val_loss, test_brain) = **−0.939**
+
+But **inside the plateau** (epoch ≥ 14, after val flattens at ~0.260),
+they are decoupled:
+
+- corr(val_loss, test_image) = **+0.066**
+- corr(val_loss, test_brain) = **+0.082**
+
+So val tracks test during the descent but is **noise in the plateau**.
+The reported v1 student `40/48` is the best-val epoch (epoch 46, val=0.2599,
+testI=40, testB=48). The argmax-test_image epoch is 56 (val=0.2601 — only
+2e-4 worse on val) at testI=44, testB=50. argmax-test_brain epoch is 18
+(val=0.2632, testI=42, testB=50). The 4pp test_image gap between best-val
+and best-test_image is real and reproducible across reruns of v1 — it's
+exactly why v3's "average late epochs" was introduced.
+
+**Implication for DGX**: if your val curve descends and your test curve
+stays at baseline throughout (your description), the failure mode is
+worse than Mac's plateau decoupling — there's no descent-phase
+correlation at all. The student isn't learning a transfer. Two
+hypotheses worth checking:
+
+1. **Refiner is degenerate**. With `_raw` βs and `session_zscore` applied
+   inline (your current setup), the input distribution to the per-voxel
+   gain/bias is different from the `_inclz` distribution v1 trained on.
+   Per-voxel scalar with `init gain=1, bias=0` may already be near a
+   local minimum in this regime. Print the gain/bias norms after a few
+   epochs — if they barely move from `(1, 0)`, the refiner is identity
+   and val descent is purely from the frozen fold-0 absorbing
+   noise differently.
+2. **Teacher is actually weaker on DGX**. Your diagnostic 1100 showed
+   teacher = 50/52 with `_raw + session_z` vs Mac's 54/58 with `_inclz`.
+   That's a 4pp lower upper bound — the student-teacher gap available
+   to close is smaller. With teacher 50/52 and baseline ~36/34, max
+   capture is 14pp Image / 18pp Brain (vs Mac's 18pp/24pp). Even
+   matching Mac's "22% of the gap" capture rate, you'd see only +3pp
+   Image / +4pp Brain, not +4/+14. Match `_inclz` (per A1) and rerun
+   the teacher to confirm — if your teacher comes back at 54/58,
+   the upper-bound problem is solved and the student gap can re-open.
+
+### A6 — DGX `_inclz` writer bug
+
+Acknowledged. Not blocking on Mac side (we use `_inclz` everywhere and it
+scores correctly). If you want a one-line equivalence test: feed the
+same raw βs to (a) Mac `inclusive_cumz` from `run_streaming_rls_glm.py:210`
+and (b) your DGX `_inclz` writer; the outputs should be element-wise
+equal up to fp32 precision.
+
+### Net recommendation for your variant runs
+
+- Variant B (session_z × fold-10) is unlikely to match v1 — wrong
+  z-policy and wrong fold. It's a useful sensitivity bracket but not a
+  reproduction.
+- The reproduction recipe is: `_inclz` (= inclusive causal cum-z per A1)
+  × fold-0 × `train_idx` built from a **770-trial** array (no blank
+  filter) × 15% val ratio with floor 50. That's what produced 40/48
+  on Mac. Variant A (causal_cz × fold-0) gets the fold right but uses
+  exclusive cum-z, so expect ~1-2pp drift from the v1 anchor at most
+  (causal_cz vs `_inclz` differs only in the trial-`i` self-stat
+  contribution, which is small after a few trials).
