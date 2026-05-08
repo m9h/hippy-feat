@@ -67,7 +67,8 @@ CKPT_BY_FOLD = {
 }
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--z-policy", choices=["session_z", "causal_cz"],
+ap.add_argument("--z-policy",
+                 choices=["session_z", "causal_cz", "inclusive_cumz"],
                  default=os.environ.get("ZPOLICY", "session_z"))
 ap.add_argument("--ckpt-fold", type=int, choices=[0, 10],
                  default=int(os.environ.get("CKPT_FOLD", "0")))
@@ -156,7 +157,25 @@ def causal_cum_zscore(arr: np.ndarray) -> np.ndarray:
     return out
 
 
-ZSCORE = {"session_z": session_zscore, "causal_cz": causal_cum_zscore}[args.z_policy]
+def inclusive_cumz(arr: np.ndarray) -> np.ndarray:
+    """Inclusive causal cum-z — trial i uses stats from 0..i (inclusive).
+    Per Apple agent reply A1: this is what `_inclz` cells were saved with.
+    Mac source: results/apple_silicon_2026-04-28/drivers/run_streaming_rls_glm.py:210-217.
+    Trial 0 becomes exactly 0 (μ=arr[0], σ≈0 → ε divide)."""
+    n = arr.shape[0]
+    z = np.zeros_like(arr, dtype=np.float32)
+    for i in range(n):
+        mu = arr[:i + 1].mean(axis=0)
+        sd = arr[:i + 1].std(axis=0) + 1e-6
+        z[i] = (arr[i] - mu) / sd
+    return z
+
+
+ZSCORE = {
+    "session_z":      session_zscore,
+    "causal_cz":      causal_cum_zscore,
+    "inclusive_cumz": inclusive_cumz,
+}[args.z_policy]
 
 
 def load_gt_from_cache(image_paths: list[Path]) -> np.ndarray:
@@ -327,8 +346,16 @@ for epoch in range(n_epochs):
     test_img = topk(p_test, gt_test, 1)
     test_bra = topk(gt_test, p_test, 1)
 
+    # Gain/bias norms — per Apple A5, used to detect refiner stuck near
+    # identity. Healthy training should see these drift away from (1, 0).
+    with torch.no_grad():
+        gain_mean = float(refiner.gain.mean())
+        gain_std = float(refiner.gain.std())
+        bias_norm = float(refiner.bias.norm())
     history.append({"epoch": epoch, "train_loss": loss_sum, "val_loss": val_loss,
-                    "test_image": test_img, "test_brain": test_bra})
+                    "test_image": test_img, "test_brain": test_bra,
+                    "gain_mean": gain_mean, "gain_std": gain_std,
+                    "bias_norm": bias_norm})
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         best_test_img = test_img
@@ -339,7 +366,9 @@ for epoch in range(n_epochs):
         no_improve += 1
     print(f"    epoch {epoch:3d}: train_loss={loss_sum:.4f}  "
           f"val_loss={val_loss:.4f}  test Image={test_img * 100:5.1f}%  "
-          f"Brain={test_bra * 100:5.1f}%", flush=True)
+          f"Brain={test_bra * 100:5.1f}%  "
+          f"gain={gain_mean:.4f}±{gain_std:.4f}  bias|·|={bias_norm:.3f}",
+          flush=True)
     if no_improve >= patience:
         print(f"  early stop at epoch {epoch}", flush=True)
         break

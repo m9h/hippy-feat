@@ -399,3 +399,45 @@ equal up to fp32 precision.
   exclusive cum-z, so expect ~1-2pp drift from the v1 anchor at most
   (causal_cz vs `_inclz` differs only in the trial-`i` self-stat
   contribution, which is small after a few trials).
+
+## DGX action 2026-05-08 (post-reply)
+
+Implemented `inclusive_cumz` per A1 verbatim in
+`scripts/train_fast_distill_from_slow.py`:
+
+```python
+def inclusive_cumz(arr):
+    n = arr.shape[0]
+    z = np.zeros_like(arr, dtype=np.float32)
+    for i in range(n):
+        mu = arr[:i + 1].mean(axis=0)
+        sd = arr[:i + 1].std(axis=0) + 1e-6
+        z[i] = (arr[i] - mu) / sd
+    return z
+```
+
+Also added per-epoch gain/bias monitoring per A5 diagnostic suggestion #1 —
+prints `gain_mean ± gain_std` and `bias_norm` each epoch so we can see
+whether the refiner is moving away from `(gain=1, bias=0)` identity init.
+
+Submitted as **job 1104**: `inclusive_cumz × fold-0 × 693-trial array`
+(no blank rerun yet — see below).
+
+Address of A2 (770-trial array):
+- DGX `Paper_RT_actual_delay0_ses-03_betas.npy` is **693 trials** (Rishab
+  pre-saved, blanks already filtered upstream).
+- DGX `RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_betas.npy` is also
+  693 trials (`scripts/run_streaming_rls_glm.py` filters blanks).
+- To replicate the Mac 770-trial setup we'd need to re-extract both with
+  blanks retained: a new ~30 min RLS GLM run for Slow, plus modifying
+  Rishab's LSS export for Fast (or rerunning nilearn LSS at pst=5
+  ourselves keeping blanks). Deferred until job 1104 lands so we can see
+  whether matching just the z-policy already recovers most of the gain.
+
+Expected after 1104:
+- If teacher hits ~54/58 (matching Mac), z-policy was the main lever and
+  blanks are second-order. Student should land closer to 40/48.
+- If teacher stays at ~50/52 (similar to session_z run), the missing
+  77 trials' contribution to per-voxel μ/σ matters more than expected.
+
+ETA ~30 min.
