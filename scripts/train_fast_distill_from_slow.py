@@ -333,6 +333,9 @@ best_state = None
 no_improve = 0
 history = []
 
+ENSEMBLE_FROM = 15        # v3 starts ensembling at this epoch
+ensemble_snapshots = []   # list of (50, 256, 1664) np arrays — test-set clip_voxels per epoch
+
 t0 = time.time()
 for epoch in range(n_epochs):
     refiner.train()
@@ -360,6 +363,10 @@ for epoch in range(n_epochs):
         p_test = fwd_eval(model, ss, se, x_test_refined, batch=8).cpu().numpy()
     test_img = topk(p_test, gt_test, 1)
     test_bra = topk(gt_test, p_test, 1)
+
+    # v3 ensemble: snapshot test-set clip_voxels from epoch 15 on.
+    if epoch >= ENSEMBLE_FROM:
+        ensemble_snapshots.append(p_test.copy())
 
     # Gain/bias norms — per Apple A5, used to detect refiner stuck near
     # identity. Healthy training should see these drift away from (1, 0).
@@ -402,6 +409,13 @@ with torch.no_grad():
 final_img = topk(p_test, gt_test, 1)
 final_bra = topk(gt_test, p_test, 1)
 
+# v3 ensemble — average late-training-epoch test-set clip_voxels (per Apple A4).
+ensemble_img = ensemble_bra = None
+if ensemble_snapshots:
+    ens = np.mean(np.stack(ensemble_snapshots, axis=0), axis=0)
+    ensemble_img = topk(ens, gt_test, 1)
+    ensemble_bra = topk(gt_test, ens, 1)
+
 
 # ---------------------------------------------------------------------------
 # Report + save
@@ -415,6 +429,12 @@ print(f"  student (Fast β + refiner, best-val):     "
       f"Image={final_img * 100:5.1f}%  Brain={final_bra * 100:5.1f}%")
 print(f"  Δ vs baseline: Image={(final_img - base_img) * 100:+.1f}pp  "
       f"Brain={(final_bra - base_bra) * 100:+.1f}pp")
+if ensemble_img is not None:
+    print(f"  student (Fast β + refiner, v3 ensemble of {len(ensemble_snapshots)} "
+          f"epochs from {ENSEMBLE_FROM}): "
+          f"Image={ensemble_img * 100:5.1f}%  Brain={ensemble_bra * 100:5.1f}%")
+    print(f"  Δ vs baseline (v3): Image={(ensemble_img - base_img) * 100:+.1f}pp  "
+          f"Brain={(ensemble_bra - base_bra) * 100:+.1f}pp")
 
 suffix = f"_{args.out_suffix}" if args.out_suffix else ""
 out_path = LOCAL / "task_2_1_betas" / f"fast_distill_results_dgx{suffix}.json"
@@ -432,6 +452,10 @@ out_path.write_text(json.dumps({
     "teacher_image": teacher_img, "teacher_brain": teacher_bra,
     "student_image": final_img, "student_brain": final_bra,
     "best_val_loss": best_val_loss,
+    "ensemble_image": ensemble_img,
+    "ensemble_brain": ensemble_bra,
+    "ensemble_n_epochs": len(ensemble_snapshots),
+    "ensemble_from": ENSEMBLE_FROM,
     "history": history,
 }, indent=2))
 print(f"\n  saved {out_path}", flush=True)
