@@ -53,6 +53,39 @@ def load_finalmask_idx() -> np.ndarray:
     return np.where(final_mask.flatten())[0][relmask]
 
 
+def compute_inprocess_acompcor(run: int, brain_3d: np.ndarray,
+                                 csf_3d: np.ndarray, wm_3d: np.ndarray,
+                                 K: int = 7, pve_thresh: float = 0.5,
+                                 erode_iter: int = 1) -> np.ndarray:
+    """In-process aCompCor PCs matching Mac's recipe (Apple A2 → diff finding).
+
+    Noise-pool: (CSF | WM) > pve_thresh & brain, eroded `erode_iter` times.
+    Per run: fmriprep BOLD → noise-pool voxels → HP filter (0.01 Hz)
+    via nilearn.signal.clean (no detrend, no standardize) → SVD → top-K
+    right singular vectors as `(T, K)` regressors.
+
+    Mirrors `results/apple_silicon_2026-04-28/drivers/run_streaming_rls_glm.py:75-85`.
+    """
+    from scipy.ndimage import binary_erosion
+    from nilearn.signal import clean
+
+    csfwm_3d = ((csf_3d > pve_thresh) | (wm_3d > pve_thresh)) & brain_3d
+    csfwm_e = binary_erosion(csfwm_3d, iterations=erode_iter)
+    mask_noise_flat = csfwm_e.flatten()
+
+    p = (FMRIPREP / f"ses-{SES_NUM}/func/"
+         f"sub-005_{SESSION}_task-C_run-{run:02d}"
+         f"_space-T1w_desc-preproc_bold.nii.gz")
+    arr = nib.load(p).get_fdata().astype(np.float32)
+    T = arr.shape[-1]
+    noise_ts = arr.reshape(-1, T)[mask_noise_flat].T                     # (T, V_pool)
+
+    ts_c = clean(noise_ts, t_r=TR, high_pass=0.01,
+                 detrend=False, standardize=False)
+    _, _, Vt = np.linalg.svd(ts_c.T, full_matrices=False)
+    return Vt[:K].T.astype(np.float32)                                   # (T, K)
+
+
 def load_per_run_motion(run: int) -> np.ndarray:
     """Stack per-TR .par files into (T_run, 6) motion params."""
     pars = sorted(PAR_DIR.glob(
@@ -245,6 +278,11 @@ def main() -> None:
                      "instead of 693). Required to replicate apple-silicon's v1 "
                      "distillation result; cell names get a `_kb` suffix to avoid "
                      "stomping the existing 693-trial files.")
+    ap.add_argument("--inprocess-acompcor", action="store_true",
+                     help="Compute aCompCor PCs in-process from FSL FAST PVE files "
+                     "(matches Mac's recipe per Apple agent reply). Default uses "
+                     "the pre-computed PCs in task_2_1_betas/acompcor/. Adds `m` "
+                     "to the cell-name suffix when set.")
     args = ap.parse_args()
 
     print("[1] loading metadata + nuisance regressors")
@@ -257,7 +295,28 @@ def main() -> None:
     print(f"  finalmask: {len(fmask)} voxels")
 
     motion_per_run = [load_per_run_motion(r) for r in RUNS]
-    acomp_per_run = [load_per_run_acompcor(r) for r in RUNS]
+    if args.inprocess_acompcor:
+        print("  computing aCompCor PCs in-process (CSF∪WM > 0.5 PVE & brain, "
+              "erode×1, HP=0.01 Hz, K=7) ...", flush=True)
+        brain_3d = nib.load(RT3T / "sub-005_final_mask.nii.gz").get_fdata() > 0
+        csf_3d = nib.load(RT3T / "T1_brain_seg_pve_0.nii.gz").get_fdata()
+        wm_3d  = nib.load(RT3T / "T1_brain_seg_pve_2.nii.gz").get_fdata()
+        # Resample PVE to brain space if shapes differ (Mac uses resample_to_img)
+        if csf_3d.shape != brain_3d.shape or wm_3d.shape != brain_3d.shape:
+            from nilearn.image import resample_to_img
+            brain_img = nib.load(RT3T / "sub-005_final_mask.nii.gz")
+            csf_3d = resample_to_img(nib.load(RT3T / "T1_brain_seg_pve_0.nii.gz"),
+                                       brain_img, interpolation="linear",
+                                       force_resample=True, copy_header=True
+                                       ).get_fdata()
+            wm_3d = resample_to_img(nib.load(RT3T / "T1_brain_seg_pve_2.nii.gz"),
+                                      brain_img, interpolation="linear",
+                                      force_resample=True, copy_header=True
+                                      ).get_fdata()
+        acomp_per_run = [compute_inprocess_acompcor(r, brain_3d, csf_3d, wm_3d)
+                          for r in RUNS]
+    else:
+        acomp_per_run = [load_per_run_acompcor(r) for r in RUNS]
     motion = np.concatenate(motion_per_run, axis=0).astype(np.float32)   # (T_total, 6)
     acomp = np.concatenate(acomp_per_run, axis=0).astype(np.float32)     # (T_total, 7)
     T_total = motion.shape[0]
@@ -283,13 +342,18 @@ def main() -> None:
         betas = streaming_rls_betas(bold, nuisance, trials, pst, hrf, T_total)
         # Save RAW βs — let retrieval pass apply its standard cum-z
         # (matches the canonical pipeline's `cumulative_zscore` utility).
-        suffix_kb = "_kb" if args.keep_blanks else ""
+        suffix = ""
+        if args.keep_blanks:
+            suffix += "_kb"
+        if args.inprocess_acompcor:
+            suffix += "m"  # "m" = Mac in-process aCompCor recipe
         cell_name = (f"RT_paper_RLS_{tier}"
                      f"{'_pst5' if tier == 'Fast' else '_pst20' if tier == 'Slow' else ''}"
-                     f"_K7CSFWM_HP_e1_raw{suffix_kb}")
+                     f"_K7CSFWM_HP_e1_raw{suffix}")
         save_cell(cell_name, betas, image_ids,
                    {"tier": tier, "pst": pst, "n_trials": n_trials,
                     "keep_blanks": bool(args.keep_blanks),
+                    "inprocess_acompcor": bool(args.inprocess_acompcor),
                     "nuisance_shape": list(nuisance.shape),
                     "hrf": "glover", "z": "raw (apply at retrieval)"})
 

@@ -12,8 +12,8 @@ mkdir -p /data/derivatives/rtmindeye_paper/logs
 
 TIERS=${TIERS:-Fast Slow EoR}
 KEEP_BLANKS=${KEEP_BLANKS:-0}
-KB_FLAG=""
-if [[ "$KEEP_BLANKS" == "1" ]]; then
-    KB_FLAG="--keep-blanks"
-fi
-.venv/bin/python -u scripts/run_streaming_rls_glm.py --tiers $TIERS $KB_FLAG
+INPROC_ACOMPCOR=${INPROC_ACOMPCOR:-0}
+EXTRA=""
+[[ "$KEEP_BLANKS" == "1" ]] && EXTRA="$EXTRA --keep-blanks"
+[[ "$INPROC_ACOMPCOR" == "1" ]] && EXTRA="$EXTRA --inprocess-acompcor"
+.venv/bin/python -u scripts/run_streaming_rls_glm.py --tiers $TIERS $EXTRA
