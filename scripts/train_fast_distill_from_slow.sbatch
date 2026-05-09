@@ -21,6 +21,7 @@ fi
 ZPOLICY=${ZPOLICY:-session_z}
 CKPT_FOLD=${CKPT_FOLD:-0}
 OUT_SUFFIX=${OUT_SUFFIX:-}
+KEEP_BLANKS=${KEEP_BLANKS:-0}
 
 docker run --rm --gpus all \
     -v /home/mhough:/home/mhough \
@@ -29,6 +30,7 @@ docker run --rm --gpus all \
     -e ZPOLICY="$ZPOLICY" \
     -e CKPT_FOLD="$CKPT_FOLD" \
     -e OUT_SUFFIX="$OUT_SUFFIX" \
+    -e KEEP_BLANKS="$KEEP_BLANKS" \
     "$IMAGE" \
     bash -c "
         rm -rf /usr/local/lib/python3.12/dist-packages/transformer_engine \

@@ -78,10 +78,16 @@ def load_bold_2792(run: int, fmask_idx: np.ndarray) -> np.ndarray:
     return arr.reshape(-1, T)[fmask_idx].T.astype(np.float32)             # (T, 2792)
 
 
-def build_trial_metadata() -> tuple[list[dict], np.ndarray]:
+def build_trial_metadata(keep_blanks: bool = False
+                          ) -> tuple[list[dict], np.ndarray]:
     """Per-trial: run, onset_within_run_TR, global_onset_TR, image_name.
 
-    Mac uses 770 trials = all non-blank events across 11 runs (incl. unchosen NSD).
+    keep_blanks=False (default): 693 trials = non-blank events.
+    keep_blanks=True: 770 trials = all events incl. blank.jpg rows.
+      This matches apple-silicon's Mac pipeline (per their reply A2 to the
+      DGX agent, 2026-05-08); the resulting `_inclz` cum-z statistics
+      include 77 blank "events" whose βs are noise, but the 11% extra
+      sample improves μ/σ stability and feeds into v1's training pool.
     """
     trials = []
     images = []
@@ -91,7 +97,10 @@ def build_trial_metadata() -> tuple[list[dict], np.ndarray]:
         # events.tsv onsets are session-cumulative seconds — subtract run's
         # first event onset to get within-run seconds.
         run_t0 = float(e["onset"].iloc[0])
-        e = e[e["image_name"] != "blank.jpg"].reset_index(drop=True)
+        if not keep_blanks:
+            e = e[e["image_name"] != "blank.jpg"].reset_index(drop=True)
+        else:
+            e = e.reset_index(drop=True)
         for _, row in e.iterrows():
             onset_tr = int(round((float(row["onset"]) - run_t0) / TR))
             onset_tr = min(onset_tr, N_TR_PER_RUN - 1)
@@ -231,12 +240,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiers", nargs="+", default=["Fast", "Slow", "EoR"],
                      choices=["Fast", "Slow", "EoR"])
+    ap.add_argument("--keep-blanks", action="store_true",
+                     help="Include blank.jpg events in the trial pool (770 trials "
+                     "instead of 693). Required to replicate apple-silicon's v1 "
+                     "distillation result; cell names get a `_kb` suffix to avoid "
+                     "stomping the existing 693-trial files.")
     args = ap.parse_args()
 
     print("[1] loading metadata + nuisance regressors")
-    trials, image_ids = build_trial_metadata()
+    trials, image_ids = build_trial_metadata(keep_blanks=args.keep_blanks)
     n_trials = len(trials)
-    print(f"  {n_trials} non-blank trials over {len(RUNS)} runs")
+    label = "all" if args.keep_blanks else "non-blank"
+    print(f"  {n_trials} {label} trials over {len(RUNS)} runs")
 
     fmask = load_finalmask_idx()
     print(f"  finalmask: {len(fmask)} voxels")
@@ -268,11 +283,13 @@ def main() -> None:
         betas = streaming_rls_betas(bold, nuisance, trials, pst, hrf, T_total)
         # Save RAW βs — let retrieval pass apply its standard cum-z
         # (matches the canonical pipeline's `cumulative_zscore` utility).
+        suffix_kb = "_kb" if args.keep_blanks else ""
         cell_name = (f"RT_paper_RLS_{tier}"
                      f"{'_pst5' if tier == 'Fast' else '_pst20' if tier == 'Slow' else ''}"
-                     f"_K7CSFWM_HP_e1_raw")
+                     f"_K7CSFWM_HP_e1_raw{suffix_kb}")
         save_cell(cell_name, betas, image_ids,
                    {"tier": tier, "pst": pst, "n_trials": n_trials,
+                    "keep_blanks": bool(args.keep_blanks),
                     "nuisance_shape": list(nuisance.shape),
                     "hrf": "glover", "z": "raw (apply at retrieval)"})
 

@@ -73,6 +73,11 @@ ap.add_argument("--z-policy",
 ap.add_argument("--ckpt-fold", type=int, choices=[0, 10],
                  default=int(os.environ.get("CKPT_FOLD", "0")))
 ap.add_argument("--out-suffix", default=os.environ.get("OUT_SUFFIX", ""))
+ap.add_argument("--keep-blanks", action="store_true",
+                 default=bool(int(os.environ.get("KEEP_BLANKS", "0"))),
+                 help="Use 770-trial streaming-RLS βs (incl. blank.jpg rows) "
+                      "to match apple-silicon's v1 recipe per their reply A2. "
+                      "Default uses 693-trial βs.")
 args = ap.parse_args()
 CKPT = CKPT_BY_FOLD[args.ckpt_fold]
 
@@ -207,19 +212,29 @@ print(f"  ss={ss}  se={se}", flush=True)
 # ---------------------------------------------------------------------------
 # Load βs
 # ---------------------------------------------------------------------------
-# Fast student input — Rishab's pre-saved Paper_RT_actual_delay0 (LSS at
-# pst=5), then session-z to match _inclz semantics.
-fast_raw = np.load(PREREG / "Paper_RT_actual_delay0_ses-03_betas.npy")
-fast_ids = np.load(PREREG / "Paper_RT_actual_delay0_ses-03_trial_ids.npy",
+if args.keep_blanks:
+    # Mac v1 recipe: streaming-RLS Fast + Slow with blank.jpg rows kept in
+    # (770-trial arrays). Per apple-silicon reply A2, both Fast and Slow
+    # come from the same `run_streaming_rls_glm.py` script.
+    fast_cell = "RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw_kb"
+    slow_cell = "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kb"
+else:
+    # Default DGX behavior: 693-trial βs, blanks already filtered upstream
+    # by Rishab (Fast LSS) and our streaming-RLS extraction (Slow).
+    fast_cell = "Paper_RT_actual_delay0"
+    slow_cell = "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw"
+
+print(f"  fast_cell: {fast_cell}", flush=True)
+print(f"  slow_cell: {slow_cell}", flush=True)
+
+fast_raw = np.load(PREREG / f"{fast_cell}_ses-03_betas.npy")
+fast_ids = np.load(PREREG / f"{fast_cell}_ses-03_trial_ids.npy",
                     allow_pickle=True)
 fast_ids = np.asarray([str(t) for t in fast_ids])
 fast_b = ZSCORE(fast_raw)
 
-# Slow teacher input — load `_raw` and apply session_zscore inline.
-# The `_inclz` files from job 1090 are corrupted (job 1100 diagnostic:
-# fold-0 retrieval drops to 4%/2% on _inclz vs 50%/52% on _raw+session_z).
-slow_raw = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_betas.npy")
-slow_ids = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_trial_ids.npy",
+slow_raw = np.load(PREREG / f"{slow_cell}_ses-03_betas.npy")
+slow_ids = np.load(PREREG / f"{slow_cell}_ses-03_trial_ids.npy",
                     allow_pickle=True)
 slow_ids = np.asarray([str(t) for t in slow_ids])
 slow_b = ZSCORE(slow_raw)
