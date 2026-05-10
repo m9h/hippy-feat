@@ -21,7 +21,7 @@ All numbers below are 50-way single-rep Image retrieval (top-1) on sub-005 ses-0
 | **Brain extraction** | finalmask (19,174 vox) from canonical | all cells | held fixed |
 | **Subject registration** | T1w-space throughout (no MNI) | all cells | matches paper |
 | **Reliability mask** | ses-01 relmask 2792 vox | all cells | held fixed at the paper's 2792-voxel input |
-| **Spatial smoothing (Gaussian)** | NOT TESTED | — | nilearn `smoothing_fwhm=None`. Heunis lists FWHM 4-8mm as common; we ablated this nowhere |
+| **Spatial smoothing (Gaussian 4mm + 8mm FWHM)** | `RT_paper_{Fast_pst5,Slow_pst20,EoR}_fmriprep_sm{4,8}mm_inclz` | 6 cells | **monotone in kernel size, no cell improves.** 8mm: -14 to -24pp Image, -8 to -36pp Brain everywhere. 4mm: Fast Image unmoved, Slow/EoR Image -2 to -8pp. Both push paper-anchor subset1 below published values. Reliability-mask voxels lose pattern fidelity to unreliable neighbors. See `SMOOTHING.md`. Confirms the paper's `smoothing_fwhm=None` design decision |
 | **Spatial normalization (template)** | NOT TESTED | — | the paper's pipeline is subject-native; templating was outside scope |
 
 ## 3. GLM specification
@@ -120,7 +120,7 @@ Things tested AT THE β LEVEL (after extraction, before model):
 
 **Categories NOT TESTED**:
 
-1. **Spatial smoothing (Gaussian FWHM)** — common in offline pipelines; never ablated
+1. ~~**Spatial smoothing (Gaussian FWHM)**~~ — **TESTED 2026-05-08** at 4mm and 8mm on all three tiers, see `SMOOTHING.md`. Monotone in kernel size, both ends hurt. The `smoothing_fwhm=None` paper default is correct on a reliability mask
 2. **Slice timing correction** — held fixed at `slice_time_ref=0`; not ablated
 3. **24-param Friston motion / squared+derivative motion regressors** — only 6-param used
 4. **RETROICOR / physiological regression** — no physio data in this dataset
