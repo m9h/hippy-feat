@@ -67,11 +67,17 @@ CKPT_BY_FOLD = {
 }
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--z-policy", choices=["session_z", "causal_cz"],
+ap.add_argument("--z-policy",
+                 choices=["session_z", "causal_cz", "inclusive_cumz", "none"],
                  default=os.environ.get("ZPOLICY", "session_z"))
 ap.add_argument("--ckpt-fold", type=int, choices=[0, 10],
                  default=int(os.environ.get("CKPT_FOLD", "0")))
 ap.add_argument("--out-suffix", default=os.environ.get("OUT_SUFFIX", ""))
+ap.add_argument("--keep-blanks", action="store_true",
+                 default=bool(int(os.environ.get("KEEP_BLANKS", "0"))),
+                 help="Use 770-trial streaming-RLS βs (incl. blank.jpg rows) "
+                      "to match apple-silicon's v1 recipe per their reply A2. "
+                      "Default uses 693-trial βs.")
 args = ap.parse_args()
 CKPT = CKPT_BY_FOLD[args.ckpt_fold]
 
@@ -156,7 +162,26 @@ def causal_cum_zscore(arr: np.ndarray) -> np.ndarray:
     return out
 
 
-ZSCORE = {"session_z": session_zscore, "causal_cz": causal_cum_zscore}[args.z_policy]
+def inclusive_cumz(arr: np.ndarray) -> np.ndarray:
+    """Inclusive causal cum-z — trial i uses stats from 0..i (inclusive).
+    Per Apple agent reply A1: this is what `_inclz` cells were saved with.
+    Mac source: results/apple_silicon_2026-04-28/drivers/run_streaming_rls_glm.py:210-217.
+    Trial 0 becomes exactly 0 (μ=arr[0], σ≈0 → ε divide)."""
+    n = arr.shape[0]
+    z = np.zeros_like(arr, dtype=np.float32)
+    for i in range(n):
+        mu = arr[:i + 1].mean(axis=0)
+        sd = arr[:i + 1].std(axis=0) + 1e-6
+        z[i] = (arr[i] - mu) / sd
+    return z
+
+
+ZSCORE = {
+    "session_z":      session_zscore,
+    "causal_cz":      causal_cum_zscore,
+    "inclusive_cumz": inclusive_cumz,
+    "none":           lambda arr: arr.astype(np.float32),
+}[args.z_policy]
 
 
 def load_gt_from_cache(image_paths: list[Path]) -> np.ndarray:
@@ -188,19 +213,35 @@ print(f"  ss={ss}  se={se}", flush=True)
 # ---------------------------------------------------------------------------
 # Load βs
 # ---------------------------------------------------------------------------
-# Fast student input — Rishab's pre-saved Paper_RT_actual_delay0 (LSS at
-# pst=5), then session-z to match _inclz semantics.
-fast_raw = np.load(PREREG / "Paper_RT_actual_delay0_ses-03_betas.npy")
-fast_ids = np.load(PREREG / "Paper_RT_actual_delay0_ses-03_trial_ids.npy",
+if args.keep_blanks:
+    # Mac v1 recipe: streaming-RLS Fast + Slow with blank.jpg rows kept in
+    # (770-trial arrays). Per apple-silicon reply A2, both Fast and Slow
+    # come from the same `run_streaming_rls_glm.py` script.
+    # `_kbm` variant (job 1150) uses Mac's in-process aCompCor (CSF∪WM
+    # > 0.5 PVE & brain, erode×1, K=7 SVD per run); diagnostic 1151
+    # confirmed Slow → fold-0 retrieval = 54% Image (matches Mac).
+    # Falls back to `_kb` (DGX pre-computed aCompCor) if `_kbm` not present.
+    use_kbm = (PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kbm_ses-03_betas.npy").exists()
+    suffix = "_kbm" if use_kbm else "_kb"
+    fast_cell = f"RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw{suffix}"
+    slow_cell = f"RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw{suffix}"
+else:
+    # Default DGX behavior: 693-trial βs, blanks already filtered upstream
+    # by Rishab (Fast LSS) and our streaming-RLS extraction (Slow).
+    fast_cell = "Paper_RT_actual_delay0"
+    slow_cell = "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw"
+
+print(f"  fast_cell: {fast_cell}", flush=True)
+print(f"  slow_cell: {slow_cell}", flush=True)
+
+fast_raw = np.load(PREREG / f"{fast_cell}_ses-03_betas.npy")
+fast_ids = np.load(PREREG / f"{fast_cell}_ses-03_trial_ids.npy",
                     allow_pickle=True)
 fast_ids = np.asarray([str(t) for t in fast_ids])
 fast_b = ZSCORE(fast_raw)
 
-# Slow teacher input — load `_raw` and apply session_zscore inline.
-# The `_inclz` files from job 1090 are corrupted (job 1100 diagnostic:
-# fold-0 retrieval drops to 4%/2% on _inclz vs 50%/52% on _raw+session_z).
-slow_raw = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_betas.npy")
-slow_ids = np.load(PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_trial_ids.npy",
+slow_raw = np.load(PREREG / f"{slow_cell}_ses-03_betas.npy")
+slow_ids = np.load(PREREG / f"{slow_cell}_ses-03_trial_ids.npy",
                     allow_pickle=True)
 slow_ids = np.asarray([str(t) for t in slow_ids])
 slow_b = ZSCORE(slow_raw)
@@ -299,6 +340,9 @@ best_state = None
 no_improve = 0
 history = []
 
+ENSEMBLE_FROM = 15        # v3 starts ensembling at this epoch
+ensemble_snapshots = []   # list of (50, 256, 1664) np arrays — test-set clip_voxels per epoch
+
 t0 = time.time()
 for epoch in range(n_epochs):
     refiner.train()
@@ -327,8 +371,20 @@ for epoch in range(n_epochs):
     test_img = topk(p_test, gt_test, 1)
     test_bra = topk(gt_test, p_test, 1)
 
+    # v3 ensemble: snapshot test-set clip_voxels from epoch 15 on.
+    if epoch >= ENSEMBLE_FROM:
+        ensemble_snapshots.append(p_test.copy())
+
+    # Gain/bias norms — per Apple A5, used to detect refiner stuck near
+    # identity. Healthy training should see these drift away from (1, 0).
+    with torch.no_grad():
+        gain_mean = float(refiner.gain.mean())
+        gain_std = float(refiner.gain.std())
+        bias_norm = float(refiner.bias.norm())
     history.append({"epoch": epoch, "train_loss": loss_sum, "val_loss": val_loss,
-                    "test_image": test_img, "test_brain": test_bra})
+                    "test_image": test_img, "test_brain": test_bra,
+                    "gain_mean": gain_mean, "gain_std": gain_std,
+                    "bias_norm": bias_norm})
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         best_test_img = test_img
@@ -339,7 +395,9 @@ for epoch in range(n_epochs):
         no_improve += 1
     print(f"    epoch {epoch:3d}: train_loss={loss_sum:.4f}  "
           f"val_loss={val_loss:.4f}  test Image={test_img * 100:5.1f}%  "
-          f"Brain={test_bra * 100:5.1f}%", flush=True)
+          f"Brain={test_bra * 100:5.1f}%  "
+          f"gain={gain_mean:.4f}±{gain_std:.4f}  bias|·|={bias_norm:.3f}",
+          flush=True)
     if no_improve >= patience:
         print(f"  early stop at epoch {epoch}", flush=True)
         break
@@ -358,6 +416,13 @@ with torch.no_grad():
 final_img = topk(p_test, gt_test, 1)
 final_bra = topk(gt_test, p_test, 1)
 
+# v3 ensemble — average late-training-epoch test-set clip_voxels (per Apple A4).
+ensemble_img = ensemble_bra = None
+if ensemble_snapshots:
+    ens = np.mean(np.stack(ensemble_snapshots, axis=0), axis=0)
+    ensemble_img = topk(ens, gt_test, 1)
+    ensemble_bra = topk(gt_test, ens, 1)
+
 
 # ---------------------------------------------------------------------------
 # Report + save
@@ -371,6 +436,12 @@ print(f"  student (Fast β + refiner, best-val):     "
       f"Image={final_img * 100:5.1f}%  Brain={final_bra * 100:5.1f}%")
 print(f"  Δ vs baseline: Image={(final_img - base_img) * 100:+.1f}pp  "
       f"Brain={(final_bra - base_bra) * 100:+.1f}pp")
+if ensemble_img is not None:
+    print(f"  student (Fast β + refiner, v3 ensemble of {len(ensemble_snapshots)} "
+          f"epochs from {ENSEMBLE_FROM}): "
+          f"Image={ensemble_img * 100:5.1f}%  Brain={ensemble_bra * 100:5.1f}%")
+    print(f"  Δ vs baseline (v3): Image={(ensemble_img - base_img) * 100:+.1f}pp  "
+          f"Brain={(ensemble_bra - base_bra) * 100:+.1f}pp")
 
 suffix = f"_{args.out_suffix}" if args.out_suffix else ""
 out_path = LOCAL / "task_2_1_betas" / f"fast_distill_results_dgx{suffix}.json"
@@ -388,6 +459,10 @@ out_path.write_text(json.dumps({
     "teacher_image": teacher_img, "teacher_brain": teacher_bra,
     "student_image": final_img, "student_brain": final_bra,
     "best_val_loss": best_val_loss,
+    "ensemble_image": ensemble_img,
+    "ensemble_brain": ensemble_bra,
+    "ensemble_n_epochs": len(ensemble_snapshots),
+    "ensemble_from": ENSEMBLE_FROM,
     "history": history,
 }, indent=2))
 print(f"\n  saved {out_path}", flush=True)

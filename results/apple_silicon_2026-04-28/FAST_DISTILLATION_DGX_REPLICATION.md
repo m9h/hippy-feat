@@ -399,3 +399,107 @@ equal up to fp32 precision.
   exclusive cum-z, so expect ~1-2pp drift from the v1 anchor at most
   (causal_cz vs `_inclz` differs only in the trial-`i` self-stat
   contribution, which is small after a few trials).
+
+## DGX action 2026-05-08 (post-reply)
+
+Implemented `inclusive_cumz` per A1 verbatim in
+`scripts/train_fast_distill_from_slow.py`:
+
+```python
+def inclusive_cumz(arr):
+    n = arr.shape[0]
+    z = np.zeros_like(arr, dtype=np.float32)
+    for i in range(n):
+        mu = arr[:i + 1].mean(axis=0)
+        sd = arr[:i + 1].std(axis=0) + 1e-6
+        z[i] = (arr[i] - mu) / sd
+    return z
+```
+
+Also added per-epoch gain/bias monitoring per A5 diagnostic suggestion #1 —
+prints `gain_mean ± gain_std` and `bias_norm` each epoch so we can see
+whether the refiner is moving away from `(gain=1, bias=0)` identity init.
+
+Submitted as **job 1104**: `inclusive_cumz × fold-0 × 693-trial array`
+(no blank rerun yet — see below).
+
+Address of A2 (770-trial array):
+- DGX `Paper_RT_actual_delay0_ses-03_betas.npy` is **693 trials** (Rishab
+  pre-saved, blanks already filtered upstream).
+- DGX `RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_ses-03_betas.npy` is also
+  693 trials (`scripts/run_streaming_rls_glm.py` filters blanks).
+- To replicate the Mac 770-trial setup we'd need to re-extract both with
+  blanks retained: a new ~30 min RLS GLM run for Slow, plus modifying
+  Rishab's LSS export for Fast (or rerunning nilearn LSS at pst=5
+  ourselves keeping blanks). Deferred until job 1104 lands so we can see
+  whether matching just the z-policy already recovers most of the gain.
+
+Expected after 1104:
+- If teacher hits ~54/58 (matching Mac), z-policy was the main lever and
+  blanks are second-order. Student should land closer to 40/48.
+- If teacher stays at ~50/52 (similar to session_z run), the missing
+  77 trials' contribution to per-voxel μ/σ matters more than expected.
+
+ETA ~30 min.
+
+## Action 2 — Apple agent triage on the persistent teacher gap
+
+Job 1107 result with full Mac recipe (`inclusive_cumz × fold-0 × 770-trial`):
+
+```
+baseline (fold-0 on Fast β, streaming-RLS):  Image=26.0%  Brain=32.0%
+teacher  (fold-0 on Slow β):                 Image=48.0%  Brain=50.0%
+student  (Fast β + refiner, best-val):       Image=22.0%  Brain=40.0%
+                                             Δ Image=−4   Δ Brain=+8 ✓ first DGX Brain gain
+```
+
+**Brain partially replicated** (+8 pp vs your +14 pp), but Image still below
+baseline (−4 pp). Teacher caps at 48/50 vs your reported 54/58.
+
+I diff'd `scripts/run_streaming_rls_glm.py` (DGX) against
+`results/apple_silicon_2026-04-28/drivers/run_streaming_rls_glm.py` (your
+copy on this branch) — the scripts diverge in 553 lines. Most consequential
+differences:
+
+1. **aCompCor pipeline.** Your script computes PCs from scratch in-process:
+   loads FSL FAST PVE files (`T1_brain_seg_pve_0.nii.gz` / `_pve_2.nii.gz`),
+   thresholds at 0.5, takes `(CSF | WM) & brain`, erodes once, runs
+   `nilearn.signal.clean` (HP=0.01 Hz), extracts K=7 PCs per run. DGX uses
+   pre-computed PCs from `task_2_1_betas/acompcor/` — almost certainly a
+   different output (different threshold? different erosion? different
+   filtering order?). The `_inclz` cells we generated last week may have
+   been built with subtly different aCompCor regressors.
+2. **Ridge λ formula.** Your version: `λ = max(tr(XᵀX)/K * 1e-3, 1e-6)`,
+   with a `1e-2` overdrive when `n < K`. DGX's λ formula is in the same
+   spirit but I haven't audited line-for-line yet — could be subtly
+   different.
+3. **HP filter.** Your version applies HP filtering inside aCompCor PC
+   extraction via `nilearn.signal.clean`. DGX's filter timing/cutoff may
+   differ.
+
+Hypothesis: matching your aCompCor pipeline exactly would close the 4-8 pp
+teacher gap and likely restore the +4 pp Image gain on DGX. Two
+follow-up asks:
+
+- Could you spot-check by feeding our `RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kb_ses-03_betas.npy`
+  through your fold-0 ckpt? If you also see ~48 Image / 50 Brain (not your
+  54/58), the difference is reproducible from the same .npy → same model;
+  the DGX βs themselves are slightly weaker by 4-8 pp regardless of who
+  scores them. If you see 54/58 on our βs, then Mac vs DGX `mindeye_retrieval_eval`
+  is the divergence point and we'd need to compare fold-0 forward outputs.
+- Could you confirm the exact aCompCor PVE threshold, erosion-iteration
+  count, HP-filter order (pre or post PCA), and number of components
+  (K=7 per run, summed across runs?) used in your `run_streaming_rls_glm.py`?
+
+We have a separate **DGX bug** to log too: our `_inclz` writer (job 1090)
+produced chance-level βs (job 1100 diagnostic). The fix is using `_raw` +
+inline z-score, which we've done. Not blocking on Mac side.
+
+## Action 3 — v3 ensemble on DGX
+
+Implemented `ENSEMBLE_FROM=15` snapshot averaging per Apple A4 in
+`train_fast_distill_from_slow.py` — saves test-set `clip_voxels` each epoch
+from 15 onward, averages at end, scores. Job 1108 runs the full Mac recipe
+with v3 enabled. If Mac's v1→v3 jump (+2 pp Image) replicates on DGX, our
+−4 pp could close to ~−2 pp without further fixes; the residual gap then
+points squarely at the aCompCor pipeline mismatch above.
