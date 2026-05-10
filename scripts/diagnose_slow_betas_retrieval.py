@@ -47,14 +47,13 @@ CELLS = [
     "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_inclz",
     # streaming RLS without inclusive z, in case z-policy is the issue
     "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw",
+    # 770-trial keep-blanks (job 1106)
+    "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kb",
+    # 770-trial keep-blanks + Mac in-process aCompCor (job 1150)
+    "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kbm",
+    "RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw_kbm",
     # paper-canonical Slow tier (Rishab's pre-saved delay=5)
     "Paper_RT_actual_delay5",
-    # apple-silicon teacher should also work on EoR
-    "RT_paper_RLS_EoR_K7CSFWM_HP_e1_inclz",
-    # paper-canonical EoR tier
-    "Paper_RT_actual_delay63",
-    # Fast sanity (we know this one matches paper at 36-38%)
-    "Paper_RT_actual_delay0",
 ]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"

@@ -216,8 +216,14 @@ if args.keep_blanks:
     # Mac v1 recipe: streaming-RLS Fast + Slow with blank.jpg rows kept in
     # (770-trial arrays). Per apple-silicon reply A2, both Fast and Slow
     # come from the same `run_streaming_rls_glm.py` script.
-    fast_cell = "RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw_kb"
-    slow_cell = "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kb"
+    # `_kbm` variant (job 1150) uses Mac's in-process aCompCor (CSF∪WM
+    # > 0.5 PVE & brain, erode×1, K=7 SVD per run); diagnostic 1151
+    # confirmed Slow → fold-0 retrieval = 54% Image (matches Mac).
+    # Falls back to `_kb` (DGX pre-computed aCompCor) if `_kbm` not present.
+    use_kbm = (PREREG / "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kbm_ses-03_betas.npy").exists()
+    suffix = "_kbm" if use_kbm else "_kb"
+    fast_cell = f"RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw{suffix}"
+    slow_cell = f"RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw{suffix}"
 else:
     # Default DGX behavior: 693-trial βs, blanks already filtered upstream
     # by Rishab (Fast LSS) and our streaming-RLS extraction (Slow).
