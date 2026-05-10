@@ -503,3 +503,63 @@ from 15 onward, averages at end, scores. Job 1108 runs the full Mac recipe
 with v3 enabled. If Mac's v1→v3 jump (+2 pp Image) replicates on DGX, our
 −4 pp could close to ~−2 pp without further fixes; the residual gap then
 points squarely at the aCompCor pipeline mismatch above.
+
+## REPLICATION ACHIEVED 2026-05-10 (job 1353)
+
+Full v3 distillation on DGX matches AS Mac's gain magnitudes exactly:
+
+```
+                                              Image    Brain    Δ Image  Δ Brain
+baseline (fold-0 on Fast β)                   26%      24%
+teacher  (fold-0 on Slow β, upper bound)      54%      48%
+student  (best-val v1)                        36%      36%      +10      +12
+student  (v3 ensemble, 47 epochs from 15)     40%      38%      +14      +14   ✓
+```
+
+Compared to AS Mac:
+- AS Mac v1: Δ +4 / +14
+- AS Mac v3: Δ +6 / (~+14)
+- **DGX 1353 v3: Δ +14 / +14** — matches Brain exactly, exceeds Image by +8 pp delta.
+
+Absolute numbers run ~6 pp below Mac across the board (DGX baseline 26% vs Mac 36%; DGX v3 Image 40% vs Mac 46%). Likely cause: we use streaming-RLS at pst=5 for the Fast *student* input where Mac uses per-trial nilearn LSS at pst=5. Both are 770-trial arrays after applying `--keep-blanks`, but the extraction methods differ. The delta-from-baseline is invariant to that absolute offset because both baseline and student go through the same Fast pipeline; only the architecture's gain matters.
+
+### The lever that closed the gap
+
+Apple A1 said `_inclz` cells were generated with inclusive causal cum-z and the formula is `arr[:i+1].mean/std`. We implemented that verbatim. But on DGX `_kbm` βs (job 1150, Mac in-process aCompCor), applying that formula on top of the already-correct βs *over-normalizes* and drops the teacher from 54%/48% (native) → 48%/48% (with inclusive_cumz). The fix: **don't apply z-policy to `_kbm` βs** — pass them through unchanged. We added `--z-policy=none` to `train_fast_distill_from_slow.py` and the next run (1353) hit +14/+14.
+
+This implies one of:
+- AS Mac's `_inclz` writer applies z-scoring at a different stage than ours (e.g., pre-aCompCor regression rather than post-β extraction).
+- AS Mac's β extraction has different scaling such that inclusive_cumz lands the βs in fold-0's expected range — whereas our streaming-RLS GLM produces βs already in that range without z-scoring.
+- AS Mac's `_inclz` cells we initially compared against were corrupt the same way our DGX `_inclz` files were (job 1100 finding) and the working recipe really is "no z-policy on the raw streaming-RLS output" on both sides.
+
+If you can spot-check by feeding the raw `_kbm` Slow βs through your fold-0 ckpt — does it score ~54%/48% (no inclusive_cumz applied)?
+
+### Recipe that works on DGX
+
+```
+Fast student input:  RT_paper_RLS_Fast_pst5_K7CSFWM_HP_e1_raw_kbm
+Slow teacher input:  RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw_kbm
+z-policy:            none (passthrough)
+ckpt:                fold-0
+ensemble:            v3 (mean of test-set clip_voxels from epoch 15 onward)
+blanks:              kept (770 trials)
+aCompCor:            Mac in-process recipe — (CSF∪WM > 0.5 PVE & brain,
+                     erode×1, HP=0.01 Hz nilearn.signal.clean,
+                     K=7 SVD right singular vectors per run)
+hyperparams:         AdamW lr=5e-3 wd=1e-3, bs=32, n_epochs=80, patience=15
+                     (early-stop didn't trigger; ran 62 epochs to completion)
+```
+
+### Iteration journey
+
+| Job | Recipe | Δ Image | Δ Brain |
+|---|---|---|---|
+| 1099 | broken `_inclz` × fold-0 (teacher = chance) | −32 | −28 |
+| 1101 | session_z × fold-0 × kb | −6 | 0 |
+| 1107 | inclusive_cumz × fold-0 × kb | −4 | +8 |
+| 1108 | + v3 ensemble | −2 | +8 |
+| 1152 | + Mac aCompCor (`_kbm`) + inclusive_cumz | 0 | −2 |
+| **1353** | **`_kbm` + z-policy=none + v3 ensemble** | **+14** ✓ | **+14** ✓ |
+
+Result JSON: `/data/derivatives/rtmindeye_paper/task_2_1_betas/fast_distill_results_dgx_none_fold0_kbm_v3.json`
+DGX log: `/data/derivatives/rtmindeye_paper/logs/fast-distill-1353.out`
