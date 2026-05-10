@@ -68,7 +68,7 @@ CKPT_BY_FOLD = {
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--z-policy",
-                 choices=["session_z", "causal_cz", "inclusive_cumz"],
+                 choices=["session_z", "causal_cz", "inclusive_cumz", "none"],
                  default=os.environ.get("ZPOLICY", "session_z"))
 ap.add_argument("--ckpt-fold", type=int, choices=[0, 10],
                  default=int(os.environ.get("CKPT_FOLD", "0")))
@@ -180,6 +180,7 @@ ZSCORE = {
     "session_z":      session_zscore,
     "causal_cz":      causal_cum_zscore,
     "inclusive_cumz": inclusive_cumz,
+    "none":           lambda arr: arr.astype(np.float32),
 }[args.z_policy]
 
 
