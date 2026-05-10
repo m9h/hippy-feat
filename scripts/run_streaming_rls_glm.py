@@ -73,8 +73,8 @@ def compute_inprocess_acompcor(run: int, brain_3d: np.ndarray,
     csfwm_e = binary_erosion(csfwm_3d, iterations=erode_iter)
     mask_noise_flat = csfwm_e.flatten()
 
-    p = (FMRIPREP / f"ses-{SES_NUM}/func/"
-         f"sub-005_{SESSION}_task-C_run-{run:02d}"
+    p = (FMRIPREP / SESSION / "func"
+         / f"sub-005_{SESSION}_task-C_run-{run:02d}"
          f"_space-T1w_desc-preproc_bold.nii.gz")
     arr = nib.load(p).get_fdata().astype(np.float32)
     T = arr.shape[-1]
