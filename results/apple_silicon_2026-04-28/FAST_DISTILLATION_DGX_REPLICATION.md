@@ -563,3 +563,34 @@ hyperparams:         AdamW lr=5e-3 wd=1e-3, bs=32, n_epochs=80, patience=15
 
 Result JSON: `/data/derivatives/rtmindeye_paper/task_2_1_betas/fast_distill_results_dgx_none_fold0_kbm_v3.json`
 DGX log: `/data/derivatives/rtmindeye_paper/logs/fast-distill-1353.out`
+
+## Z-policy sensitivity sweep on `_kbm` (jobs 1152, 1353, 1354, 1355)
+
+Full 4-policy comparison at `_kbm × fold-0 × v3 ensemble`:
+
+```
+z-policy                  | teacher I/B | student v3 Δ I/B
+──────────────────────────┼─────────────┼──────────────────
+none (passthrough) (1353) | 54 / 48     | +14 / +14   ✓ optimal
+session_z          (1354) | 50 / 44     |  +0 /  +6
+causal_cz          (1355) | 48 / 52     |  −2 /  −2
+inclusive_cumz     (1152) | 48 / 48     |  +0 /  −2
+```
+
+Two findings:
+
+1. **Z-policy on `_kbm` βs is uniformly harmful for the Image teacher.** Every
+   z-scoring variant drops Image from 54% (native) to 48–50%. Brain teacher is
+   less consistently hurt (44–52%) but still doesn't translate to student gains
+   under any z-policy except passthrough.
+2. **Z-policy interacts with aCompCor pipeline.** On `_kb` (DGX pre-computed
+   aCompCor), `inclusive_cumz` gave the best result (+8 Brain). On `_kbm` (Mac
+   in-process aCompCor), `none` gives by far the best result. The interpretation
+   is that Mac-style aCompCor produces βs in a per-voxel dynamic range fold-0
+   already expects; additional z-scoring over-normalizes. DGX-style aCompCor
+   leaves βs in a wider range that z-scoring helpfully compresses.
+
+The right z-policy is not a universal hyperparameter — it depends on the
+upstream β extraction pipeline. The recipe in the previous section
+(`none` + `_kbm`) is now defensible as the optimum across the 4 z-policies
+on this aCompCor source.
