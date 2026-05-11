@@ -213,14 +213,17 @@ def streaming_rls_betas(bold: np.ndarray, nuisance: np.ndarray,
 
         K = X.shape[1]
         XtX = X.T @ X                                                     # (K, K)
-        # Ridge λ — minimal regularization just for numerical stability;
-        # using stronger λ (like 1e-3·tr/K) crushes per-trial signal and
-        # leaves all βs sharing a common ridge-shrunk mean pattern.
+        # Ridge λ — match Mac apple-silicon recipe verbatim (reply 2026-05-10):
+        #   over-determined  (n >= K):  lam = max(tr/K * 1e-3, 1e-6)
+        #   under-determined (n  < K):  lam = max(tr/K * 1e-2, 1e-4)
+        # Previous DGX values were 1e-8 / 1e-3 (5 orders of magnitude weaker
+        # standard case) on the theory that stronger λ "crushes per-trial
+        # signal" — but Mac's stronger λ gives 54/58 teacher retrieval.
         tr_xtx = float(np.trace(XtX))
         if n_used < K:
-            lam = 1e-3 * tr_xtx / K
+            lam = max(1e-2 * tr_xtx / max(K, 1), 1e-4)
         else:
-            lam = 1e-8 * tr_xtx / K
+            lam = max(1e-3 * tr_xtx / max(K, 1), 1e-6)
         XtX += lam * np.eye(K, dtype=X.dtype)
 
         # Solve. Use cholesky for SPD ridge matrix.
