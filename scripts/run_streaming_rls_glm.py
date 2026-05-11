@@ -161,9 +161,12 @@ def make_concat_nuisance(motion: np.ndarray, acomp: np.ndarray
         s = r * N_TR_PER_RUN
         e = s + N_TR_PER_RUN
         intercept[s:e, r] = 1.0
-        # cosine drift order 1: cos(pi * (2t+1) / (2*N))
+        # cosine drift order 1, hand-rolled per apple-silicon reply 2026-05-10:
+        # cos(pi * t / N_r), one column per run. NOT the nilearn half-offset
+        # cos(pi * (2t+1) / (2N)) basis we used previously, which was the
+        # top suspect for the 10pp Brain-retrieval gap.
         t = np.arange(N_TR_PER_RUN)
-        drift[s:e, r] = np.cos(np.pi * (2 * t + 1) / (2 * N_TR_PER_RUN))
+        drift[s:e, r] = np.cos(np.pi * t / N_TR_PER_RUN)
     return np.concatenate([intercept, drift, motion, acomp], axis=1)
 
 
