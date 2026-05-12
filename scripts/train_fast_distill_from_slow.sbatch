@@ -31,6 +31,8 @@ docker run --rm --gpus all \
     -e CKPT_FOLD="$CKPT_FOLD" \
     -e OUT_SUFFIX="$OUT_SUFFIX" \
     -e KEEP_BLANKS="$KEEP_BLANKS" \
+    -e FAST_CELL="${FAST_CELL:-}" \
+    -e SLOW_CELL="${SLOW_CELL:-}" \
     "$IMAGE" \
     bash -c "
         rm -rf /usr/local/lib/python3.12/dist-packages/transformer_engine \
