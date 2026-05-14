@@ -231,9 +231,10 @@ else:
     fast_cell = "Paper_RT_actual_delay0"
     slow_cell = "RT_paper_RLS_Slow_pst20_K7CSFWM_HP_e1_raw"
 
-# Optional env-var override for cell names (e.g. swap in per-trial LSS Fast):
-fast_cell = os.environ.get("FAST_CELL", fast_cell)
-slow_cell = os.environ.get("SLOW_CELL", slow_cell)
+# Optional env-var override for cell names (e.g. swap in per-trial LSS Fast).
+# Use `or` so empty-string env vars (sbatch's `-e VAR="${VAR:-}"`) fall back.
+fast_cell = os.environ.get("FAST_CELL") or fast_cell
+slow_cell = os.environ.get("SLOW_CELL") or slow_cell
 
 print(f"  fast_cell: {fast_cell}", flush=True)
 print(f"  slow_cell: {slow_cell}", flush=True)
