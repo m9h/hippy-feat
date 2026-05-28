@@ -3,7 +3,7 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:gb10:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=96G
 #SBATCH --output=/data/derivatives/eeg_sae/logs/%x-%j.out
 # No --time: single-user cluster, partition max is infinite.
 
@@ -33,6 +33,7 @@ BATCH=${BATCH:-4096}
 AUX_K=${AUX_K:-0}      # 0 = disabled. Set AUX_K=$K to turn on Gao 2024 aux_k.
 AUX_COEF=${AUX_COEF:-0.03125}
 AUX_KILL=${AUX_KILL:-200}
+MAX_TOKENS=${MAX_TOKENS:-}  # blank = no cap; e.g. 8000000 for memory-bounded sweep
 
 # Output prefix derived from input filename + SAE hyperparams. Encode aux_k
 # in the tag so a plain k=32 run and a k=32 + aux_k=32 run don't collide.
@@ -75,6 +76,9 @@ PY_CMD=( python scripts/train_sae.py
 )
 if [[ -n "$D_DICT" ]]; then
     PY_CMD+=( --d-dict "$D_DICT" )
+fi
+if [[ -n "$MAX_TOKENS" ]]; then
+    PY_CMD+=( --max-tokens "$MAX_TOKENS" )
 fi
 
 # -B /data:/data : apptainer does NOT auto-bind NFS paths; without this

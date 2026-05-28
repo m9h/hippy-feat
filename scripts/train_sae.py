@@ -62,26 +62,44 @@ def train(args):
     # ---- load activations ------------------------------------------------
     print(f"[load] {args.activations}", flush=True)
     blob = np.load(args.activations, allow_pickle=True)
-    acts = blob["activations"].astype(np.float32)            # (N, d_model)
-    if acts.ndim != 2:
-        raise ValueError(f"expected (N, d_model) activations, got {acts.shape}")
-    N, d_model = acts.shape
+    acts_full = blob["activations"]
+    N_full = acts_full.shape[0]
+    d_model = acts_full.shape[1]
+    if acts_full.ndim != 2:
+        raise ValueError(f"expected (N, d_model) activations, got {acts_full.shape}")
     sidecar = Path(args.activations).with_suffix(".json")
     if sidecar.exists():
         ext_cfg = json.loads(sidecar.read_text())
     else:
         ext_cfg = {}
+
+    # Hold-out split for the audit (no leakage into the training MSE).
+    # If --max-tokens caps N, downsample first; otherwise the .astype(float32)
+    # copy of a 50+ GB activations array will OOM the host alongside
+    # x_train / x_holdout copies.
+    rng = np.random.default_rng(args.seed)
+    if args.max_tokens is not None and args.max_tokens < N_full:
+        keep = rng.choice(N_full, size=args.max_tokens, replace=False)
+        keep.sort()
+        acts = np.ascontiguousarray(acts_full[keep]).astype(np.float32, copy=False)
+        N = args.max_tokens
+        print(f"  [downsample] {N_full} → {N} tokens (cap=--max-tokens)", flush=True)
+    else:
+        acts = acts_full.astype(np.float32, copy=False)
+        N = N_full
     print(f"  acts: N={N}  d_model={d_model}  d_dict={args.d_dict}  k={args.k}",
           flush=True)
 
-    # Hold-out split for the audit (no leakage into the training MSE).
-    rng = np.random.default_rng(args.seed)
     perm = rng.permutation(N)
     n_holdout = min(args.n_holdout, N // 5)
     holdout_idx = perm[:n_holdout]
     train_idx = perm[n_holdout:]
     x_train = jnp.asarray(acts[train_idx])
     x_holdout = jnp.asarray(acts[holdout_idx])
+    # Free the host-side numpy buffer once both halves are on device. JAX
+    # holds its own copy; otherwise we keep ~N*d_model*4 bytes resident
+    # in RAM for the whole training loop (~50 GB on R10).
+    del acts, acts_full, blob
     print(f"  train={len(train_idx)}  holdout={len(holdout_idx)}", flush=True)
 
     # ---- init SAE --------------------------------------------------------
@@ -210,6 +228,10 @@ def main():
     ap.add_argument("--aux-steps-to-kill", type=int, default=200,
                     help="feature is considered dead after this many steps "
                          "without firing")
+    ap.add_argument("--max-tokens", type=int, default=None,
+                    help="Cap on training tokens (random subsample). "
+                         "Use for memory-bounded sweeps on large releases. "
+                         "Default: use all tokens.")
     args = ap.parse_args()
 
     # Late-bind d_dict from d_model if not supplied
