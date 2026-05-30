@@ -255,17 +255,76 @@ def main():
     rows = []        # (feature, concept, train_score, test_score)
     sel_records = []  # one per feature: target metric + off-target metric
 
+    # --- Aggregate to SUBJECT level --------------------------------------
+    # Per-token regression returns ~0 R² for all features because each
+    # subject's tokens all share the same label (label has zero within-
+    # subject variance, feature has high within-subject variance — slope
+    # estimator drowns in within-subject noise). The BrainCapture-style
+    # methodology aggregates feature activations per subject (mean across
+    # the subject's tokens) before regressing.
+    print(f"[aggregate] mean-pooling features per subject", flush=True)
+    unique_subj, subj_idx = np.unique(subj, return_inverse=True)
+    n_subj = len(unique_subj)
+    counts = np.bincount(subj_idx, minlength=n_subj).astype(np.float32)
+    subj_latents = np.zeros((n_subj, latents.shape[1]), dtype=np.float32)
+    # Single scatter-add over the full (N, d_dict) matrix.
+    np.add.at(subj_latents, subj_idx, latents)
+    subj_latents /= counts[:, None]
+    print(f"  {n_subj} subjects × {latents.shape[1]} features", flush=True)
+
+    # Recompute the live-feature set using SUBJECT-level variance — the
+    # token-level filter passes features that mean-pool to near-constant
+    # values, which then trigger the (var_x < 1e-12) early-exit in the
+    # regression and return literal-zero R² (visible as p_factor's "0.000"
+    # in the first run).
+    subj_var = subj_latents.var(axis=0)
+    live_features = np.where(subj_var > 1e-10)[0]
+    print(f"  [live-subj] {len(live_features)}/{d_dict} features have "
+          f"subject-level variance (after aggregation)", flush=True)
+
+    # Pull subject-level labels (any token for a subject works — labels
+    # are constant per subject).
+    subj_concept = {}
+    subj_valid = {}
+    first_token_per_subj = np.zeros(n_subj, dtype=np.int64)
+    # Find one representative token index per subject.
+    seen = np.zeros(n_subj, dtype=bool)
+    for i, s in enumerate(subj_idx):
+        if not seen[s]:
+            first_token_per_subj[s] = i
+            seen[s] = True
+    for c in CONTINUOUS_CONCEPTS:
+        raw_token, valid_token = concept_arrays[c]
+        subj_concept[c] = raw_token[first_token_per_subj]
+        subj_valid[c] = valid_token[first_token_per_subj]
+    sex_token = concept_arrays["sex"][0]
+    sex_valid_token = concept_arrays["sex"][1]
+    subj_concept["sex"] = sex_token[first_token_per_subj]
+    subj_valid["sex"] = sex_valid_token[first_token_per_subj]
+
+    print(f"[split] subject-level splits over {n_subj} subjects", flush=True)
+    rng = np.random.default_rng(args.seed)
+    splits = {}
+    for c in ALL_CONCEPTS:
+        valid_s = subj_valid[c]
+        idx_s = np.where(valid_s)[0]
+        rng_c = np.random.default_rng(args.seed)
+        perm = rng_c.permutation(idx_s)
+        n_test = max(1, int(round(len(perm) * args.test_frac)))
+        splits[c] = (perm[n_test:], perm[:n_test])
+        print(f"  {c:14s} train_subj={len(splits[c][0])} "
+              f"test_subj={len(splits[c][1])}", flush=True)
+
     print(f"[probe] {len(live_features)} live features × "
-          f"{len(ALL_CONCEPTS)} concepts", flush=True)
+          f"{len(ALL_CONCEPTS)} concepts on subject-level features",
+          flush=True)
 
     for feat_pos, f in enumerate(live_features):
-        feat = latents[:, f]
+        feat = subj_latents[:, f]
         per_concept_test = {}
         for c in ALL_CONCEPTS:
-            label, valid = concept_arrays[c]
-            tr, te = subject_stratified_split(
-                subj, valid, args.test_frac, args.seed,
-            )
+            label = subj_concept[c]
+            tr, te = splits[c]
             if len(tr) < 10 or len(te) < 5:
                 tr_score = te_score = float("nan")
             elif c in BINARY_CONCEPTS:
