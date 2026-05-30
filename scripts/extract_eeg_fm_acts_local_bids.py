@@ -133,10 +133,17 @@ def load_local_bids(release: int, cache_dir: str, task: str
     if not bids_root.exists():
         raise FileNotFoundError(f"BIDS root {bids_root} does not exist")
 
-    # Find every <sub-X>/eeg/<sub-X>_task-{task}_eeg.set
+    # Find every <sub-X>/eeg/<sub-X>_task-{task}_[run-N_]eeg.set
+    # The middle `*` matches both single-run files (e.g. RestingState:
+    # sub-X_task-RestingState_eeg.set) and multi-run task files (e.g.
+    # contrastChangeDetection: sub-X_task-contrastChangeDetection_run-1_eeg.set).
     set_files = sorted(bids_root.glob(
-        f"sub-*/eeg/sub-*_task-{task}_eeg.set"
+        f"sub-*/eeg/sub-*_task-{task}_*eeg.set"
     ))
+    # Some tasks have no per-run files; the trailing `*eeg.set` will then
+    # also try to match `_task-X_eeg.set` with `*` consuming empty. pathlib
+    # glob handles that; we still need to dedupe in case both forms exist.
+    set_files = sorted(set(set_files))
     if not set_files:
         raise FileNotFoundError(
             f"No matching .set files under {bids_root}/sub-*/eeg/ "
