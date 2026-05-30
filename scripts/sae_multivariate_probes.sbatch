@@ -16,12 +16,20 @@ SIF=/data/derivatives/containers/jax-arm64-cu13.sif
 OUT_DIR=/data/derivatives/eeg_sae
 
 ACTS=${ACTS:?"set ACTS=/path/to/activations.npz"}
-SAE=${SAE:?"set SAE=/path/to/sae.npz"}
+SAE=${SAE:-}                # blank when RAW=1
+RAW=${RAW:-0}               # set RAW=1 to bypass the SAE
 SEED=${SEED:-0}
 TEST_FRAC=${TEST_FRAC:-0.25}
 
-SAE_TAG=$(basename "$SAE" .npz)
-OUT_PREFIX="$OUT_DIR/probes/${SAE_TAG}"
+if [[ "$RAW" == "1" ]]; then
+    ACTS_TAG=$(basename "$ACTS" .npz)
+    OUT_PREFIX="$OUT_DIR/probes/${ACTS_TAG}_RAW"
+elif [[ -n "$SAE" ]]; then
+    SAE_TAG=$(basename "$SAE" .npz)
+    OUT_PREFIX="$OUT_DIR/probes/${SAE_TAG}"
+else
+    echo "ERROR: must set SAE=... or RAW=1" >&2; exit 1
+fi
 mkdir -p "$OUT_DIR/logs" "$OUT_DIR/probes"
 
 echo "Job:    sae_multivariate_probes.sbatch"
@@ -29,21 +37,26 @@ echo "Acts:   $ACTS"
 echo "SAE:    $SAE"
 echo "Out:    ${OUT_PREFIX}_multivariate.{csv,json}"
 
+PY_ARGS=( --activations "$ACTS"
+          --out-prefix "$OUT_PREFIX"
+          --test-frac "$TEST_FRAC"
+          --seed "$SEED" )
+if [[ "$RAW" == "1" ]]; then
+    PY_ARGS+=( --raw )
+else
+    PY_ARGS+=( --sae "$SAE" )
+fi
+
 apptainer exec --nv \
     --env PYTHONPATH="$PROJECT_ROOT" \
     --env PYTHONNOUSERSITE=1 \
     -B "$PROJECT_ROOT":"$PROJECT_ROOT" \
     -B /data:/data \
-    "$SIF" bash -c '
+    "$SIF" bash -c "
         set -euo pipefail
-        export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
-        cd '"$PROJECT_ROOT"'
-        python scripts/sae_multivariate_probes.py \
-            --activations "'"$ACTS"'" \
-            --sae "'"$SAE"'" \
-            --out-prefix "'"$OUT_PREFIX"'" \
-            --test-frac '"$TEST_FRAC"' \
-            --seed '"$SEED"'
-    '
+        export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:\$LD_LIBRARY_PATH
+        cd $PROJECT_ROOT
+        python scripts/sae_multivariate_probes.py $(printf '%q ' "${PY_ARGS[@]}")
+    "
 
 echo "[done] multivariate probes: ${OUT_PREFIX}_multivariate.csv"

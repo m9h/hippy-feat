@@ -120,12 +120,21 @@ def auc(scores, labels):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--activations", required=True)
-    ap.add_argument("--sae", required=True)
+    ap.add_argument("--sae", default=None,
+                    help="SAE checkpoint. Omit (with --raw) to probe the "
+                         "raw activations directly, bypassing the SAE.")
+    ap.add_argument("--raw", action="store_true",
+                    help="Skip SAE encoding; probe raw encoder activations "
+                         "directly. Tests whether the SAE is filtering "
+                         "signal vs. whether the encoder itself doesn't "
+                         "carry the concept.")
     ap.add_argument("--out-prefix", required=True)
     ap.add_argument("--test-frac", type=float, default=0.25)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-tokens", type=int, default=500_000)
     args = ap.parse_args()
+    if not args.raw and args.sae is None:
+        ap.error("--sae required unless --raw is given")
 
     print(f"[load] activations {args.activations}", flush=True)
     blob = np.load(args.activations, allow_pickle=True)
@@ -149,12 +158,16 @@ def main():
     else:
         blob = dict(blob)
 
-    print(f"[load] sae {args.sae}", flush=True)
-    sae_blob = dict(np.load(args.sae, allow_pickle=True))
-
-    print(f"[encode] activations → latents", flush=True)
-    latents = encode_latents(acts, sae_blob)
-    print(f"  latents: {latents.shape}", flush=True)
+    if args.raw:
+        print(f"[raw] bypassing SAE; using raw encoder activations as features",
+              flush=True)
+        latents = acts
+    else:
+        print(f"[load] sae {args.sae}", flush=True)
+        sae_blob = dict(np.load(args.sae, allow_pickle=True))
+        print(f"[encode] activations → latents", flush=True)
+        latents = encode_latents(acts, sae_blob)
+    print(f"  features: {latents.shape}", flush=True)
 
     # Subject-level aggregation
     print(f"[aggregate] mean-pool features per subject", flush=True)
@@ -257,7 +270,8 @@ def main():
     with open(json_path, "w") as f:
         json.dump({
             "activations": str(args.activations),
-            "sae": str(args.sae),
+            "sae": str(args.sae) if args.sae else None,
+            "raw": bool(args.raw),
             "n_subjects": int(n_subj),
             "n_live_features": int(subj_latents.shape[1]),
             "results": results,
