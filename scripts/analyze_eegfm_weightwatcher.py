@@ -134,6 +134,25 @@ def _load_from_hf_safetensors(model_id: str, cache_dir: str,
     return _state_dict_wrapper(state).eval()
 
 
+def _load_zuna(model_id: str, cache_dir: str):
+    """ZUNA (Zyphra 380M masked diffusion AE), transformers custom-code wrap.
+
+    Prefer ``AutoModel(trust_remote_code)`` so WW sees real per-layer typing
+    (encoder/decoder attention vs MLP). Fall back to raw-safetensors ESD if
+    the custom ``modeling_zuna.py`` deps aren't importable in this container.
+    """
+    try:
+        from transformers import AutoModel
+        return AutoModel.from_pretrained(
+            model_id, trust_remote_code=True, cache_dir=cache_dir,
+        ).eval()
+    except Exception as e:
+        print(f"  [zuna AutoModel failed: {type(e).__name__}: {e}; "
+              f"falling back to safetensors ESD]", flush=True)
+        return _load_from_hf_safetensors(model_id, cache_dir,
+                                          filename="model.safetensors")
+
+
 def _load_cbramod(model_id: str, cache_dir: str):
     return _load_from_hf_safetensors(model_id, cache_dir,
                                        filename="model.safetensors")
@@ -151,6 +170,7 @@ MODELS = {
     "biot":    ("braindecode/biot-pretrained-six-datasets-18chs",   lambda i, c: _load_braindecode_model("BIOT",    i, c)),
     "cbramod": ("braindecode/cbramod-pretrained",                   _load_cbramod),
     "luna":    ("PulpBio/LUNA",                                     _load_luna),
+    "zuna":    ("mhough/zuna-base",                                 _load_zuna),
 }
 
 
@@ -224,12 +244,24 @@ def main():
                           min_evals=args.min_evals)
         )
 
-    # Cross-model summary table
-    sdf = pd.DataFrame(summaries)
+    # Cross-model summary table — merge with any existing summary by model
+    # name so models can be added incrementally without clobbering prior rows.
     summary_path = out_dir / "all_models_summary.csv"
-    sdf.to_csv(summary_path, index=False)
     summary_json = out_dir / "all_models_summary.json"
-    summary_json.write_text(json.dumps(summaries, indent=2))
+    merged: dict[str, dict] = {}
+    if summary_json.exists():
+        try:
+            for row in json.loads(summary_json.read_text()):
+                merged[row["model"]] = row
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+    for row in summaries:
+        merged[row["model"]] = row
+    ordered = [merged[n] for n in MODELS if n in merged]
+    ordered += [r for n, r in merged.items() if n not in MODELS]
+    sdf = pd.DataFrame(ordered)
+    sdf.to_csv(summary_path, index=False)
+    summary_json.write_text(json.dumps(ordered, indent=2))
 
     print()
     print("=" * 75)
