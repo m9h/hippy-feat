@@ -20,9 +20,16 @@ from jaxoccoli.hf_encoder import get_adapter, make_hf_encoder
 from jaxoccoli.eeg_fm import (
     REVEAdapter,
     LaBraMAdapter,
+    ZunaAdapter,
     REVE_BASE_ID,
     LABRAM_DEFAULT_ID,
+    ZUNA_BASE_ID,
     _resolve_dotted,
+    _zuna_discretize_chan_pos,
+    _zuna_tokenize,
+    _zuna_strip_registers_and_pool,
+    ZUNA_FINE_TIME_PTS,
+    ZUNA_POS_NUM_BINS,
 )
 
 
@@ -41,6 +48,7 @@ class _FakeTensor:
     def numpy(self): return self._arr
     def size(self, dim): return self._arr.shape[dim]
     def expand(self, *shape): return self  # positions broadcast
+    def __getitem__(self, idx): return self  # [None] unsqueeze on the mock
 
 
 def _make_fake_torch():
@@ -69,6 +77,8 @@ def _make_fake_torch():
     def _load(path, map_location=None):
         return {}
     fake.load = _load
+
+    fake.tensor = lambda data, device=None: _FakeTensor(np.asarray(data))
     return fake
 
 
@@ -83,6 +93,9 @@ class TestRegistration:
 
     def test_labram_registered(self):
         assert get_adapter(LABRAM_DEFAULT_ID) is LaBraMAdapter
+
+    def test_zuna_registered(self):
+        assert get_adapter(ZUNA_BASE_ID) is ZunaAdapter
 
 
 # ===========================================================================
@@ -326,6 +339,202 @@ class TestLaBraMAdapter:
         loaded = a.load_model(LABRAM_DEFAULT_ID)
         with pytest.raises(ValueError, match="'eeg'"):
             a.extract_features(loaded, {})
+
+
+# ===========================================================================
+# ZUNA tokeniser helpers (pure numpy — no model needed)
+# ===========================================================================
+
+class TestZunaHelpers:
+
+    def test_discretize_centre_and_extremes(self):
+        # Centre of the [-0.13, 0.13] cube -> middle bin; corners -> 0 / max.
+        pos = np.array([[0.0, 0.0, 0.0],
+                        [-0.13, -0.13, -0.13],
+                        [0.13, 0.13, 0.13]])
+        disc = _zuna_discretize_chan_pos(pos)
+        assert disc.shape == (3, 3)
+        np.testing.assert_array_equal(disc[0], [50, 50, 50])
+        np.testing.assert_array_equal(disc[1], [0, 0, 0])
+        # Upper extreme clamps to num_bins-1.
+        np.testing.assert_array_equal(disc[2], [ZUNA_POS_NUM_BINS - 1] * 3)
+
+    def test_discretize_clamps_out_of_bounds(self):
+        pos = np.array([[10.0, -10.0, 0.0]])
+        disc = _zuna_discretize_chan_pos(pos)
+        assert disc[0, 0] == ZUNA_POS_NUM_BINS - 1
+        assert disc[0, 1] == 0
+
+    def test_tokenize_shapes_and_channel_major_order(self):
+        C, tc, tf = 4, 3, ZUNA_FINE_TIME_PTS
+        T = tc * tf
+        # Distinct constant per channel so we can verify token ordering.
+        eeg = np.repeat(np.arange(C).reshape(C, 1), T, axis=1).astype(np.float32)
+        cpd = np.zeros((C, 3), dtype=np.int64)
+        enc_in, t_coarse, cpd_r, tc_out = _zuna_tokenize(eeg, cpd, tf=tf)
+        assert tc_out == tc
+        assert enc_in.shape == (C * tc, tf)
+        assert t_coarse.shape == (C * tc, 1)
+        assert cpd_r.shape == (C * tc, 3)
+        # Channel-major: first tc tokens all belong to channel 0, etc.
+        for ch in range(C):
+            block = enc_in[ch * tc:(ch + 1) * tc]
+            assert np.allclose(block, ch)
+        # Coarse-time index cycles 0..tc-1 within each channel.
+        np.testing.assert_array_equal(
+            t_coarse.ravel(), np.tile(np.arange(tc), C)
+        )
+
+    def test_tokenize_rejects_indivisible_T(self):
+        eeg = np.zeros((2, ZUNA_FINE_TIME_PTS + 1), dtype=np.float32)
+        with pytest.raises(ValueError, match="divisible"):
+            _zuna_tokenize(eeg, np.zeros((2, 3)))
+
+    def test_strip_registers_and_pool(self):
+        # df=1 -> token layout [reg0, real0, reg1, real1, ...].
+        C, tc, D = 2, 3, 5
+        seqlen = C * tc
+        L = 2 * seqlen
+        h = np.zeros((1, L, D), dtype=np.float32)
+        # Mark registers with -1 (must be dropped) and reals with a value
+        # encoding (channel, coarse_time) so we can check pooling.
+        for g in range(seqlen):
+            h[0, 2 * g] = -1.0                  # register
+            ch, t = divmod(g, tc)               # channel-major real token
+            h[0, 2 * g + 1] = ch * 10 + t       # real token value
+        pooled = _zuna_strip_registers_and_pool(h, C, tc, df=1)
+        assert pooled.shape == (1, C, D)
+        # Channel ch pools mean over t=0..tc-1 of (ch*10 + t).
+        for ch in range(C):
+            expected = np.mean([ch * 10 + t for t in range(tc)])
+            assert np.allclose(pooled[0, ch], expected)
+        # Registers (-1) must not leak into the pooled result.
+        assert (pooled != -1.0).all()
+
+
+# ===========================================================================
+# ZUNA adapter
+# ===========================================================================
+
+class _MockZunaBlock:
+    def __init__(self):
+        self._hooks = []
+    def register_forward_hook(self, fn):
+        self._hooks.append(fn)
+        return MagicMock()
+    def _fire(self, output):
+        for h in self._hooks:
+            h(self, None, output)
+
+
+class _MockZunaModel:
+    """Honors the ZunaModel attribute tree (``model.encoder.layers``) and the
+    ``encode(encoder_input, seq_lens, ...)`` API; firing the hooked encoder
+    block with a deterministic register-interleaved output."""
+    def __init__(self, n_blocks=16, dim=8):
+        self.blocks = [_MockZunaBlock() for _ in range(n_blocks)]
+        encoder = types.SimpleNamespace(layers=self.blocks)
+        self.model = types.SimpleNamespace(encoder=encoder)
+        self.config = types.SimpleNamespace(dim=dim, n_layers=n_blocks)
+        self._dim = dim
+        self.last_block_output = None
+    def to(self, device): return self
+    def eval(self): return self
+    def encode(self, encoder_input, seq_lens, t_coarse=None,
+               chan_pos_discrete=None, tok_idx=None):
+        seqlen = encoder_input.size(0)
+        L = 2 * seqlen  # df=1 register interleave
+        arr = np.arange(L * self._dim, dtype=np.float32).reshape(1, L, self._dim)
+        out = _FakeTensor(arr)
+        self.last_block_output = arr
+        for b in self.blocks:
+            if b._hooks:
+                b._fire(out)
+        return _FakeTensor(np.zeros((1, seqlen, 32), dtype=np.float32))
+
+
+@pytest.fixture
+def patched_zuna(monkeypatch):
+    fake_torch = _make_fake_torch()
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    mdl = _MockZunaModel()
+    fake_transformers = types.ModuleType("transformers")
+    class _AutoModel:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            return mdl
+    fake_transformers.AutoModel = _AutoModel
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    return mdl
+
+
+class TestZunaAdapter:
+
+    def test_init_defaults(self):
+        a = ZunaAdapter()
+        assert a.layer == -1
+        assert a.hook_path == "model.encoder.layers"
+
+    def test_output_space(self):
+        assert ZunaAdapter().output_space == "zuna-encoder-hidden-states"
+
+    def test_output_dim_before_load_raises(self):
+        with pytest.raises(RuntimeError, match="only known after load_model"):
+            ZunaAdapter().output_dim
+
+    def test_load_model_sets_d_model_and_blocks(self, patched_zuna):
+        a = ZunaAdapter()
+        a.load_model(ZUNA_BASE_ID)
+        assert a.output_dim == 8       # _MockZunaModel dim
+        assert a._n_blocks == 16
+
+    def test_extract_features_pools_to_per_channel(self, patched_zuna):
+        mdl = patched_zuna
+        C, tc, tf = 3, 2, ZUNA_FINE_TIME_PTS
+        T = tc * tf
+        a = ZunaAdapter()
+        loaded = a.load_model(ZUNA_BASE_ID)
+        ch_names = [f"E{i+1}" for i in range(C)]
+        # Pre-seed the position cache so MNE isn't needed in the unit test.
+        a._pos_cache[tuple(ch_names)] = np.zeros((C, 3), dtype=np.int64)
+
+        eeg = np.random.randn(2, C, T).astype(np.float32)
+        out = a.extract_features(
+            loaded, {"eeg": eeg, "electrode_names": ch_names}
+        )
+        assert out.shape == (2, C, 8)   # (B, n_chans, dim)
+        # Must match the pure-helper reduction of the fired block output.
+        expected = _zuna_strip_registers_and_pool(
+            mdl.last_block_output, C, tc, df=1
+        )[0]
+        np.testing.assert_allclose(out[0], expected, rtol=1e-5)
+
+    def test_missing_eeg_raises(self, patched_zuna):
+        a = ZunaAdapter()
+        loaded = a.load_model(ZUNA_BASE_ID)
+        with pytest.raises(ValueError, match="'eeg'"):
+            a.extract_features(loaded, {"electrode_names": ["E1"]})
+
+    def test_missing_ch_names_raises(self, patched_zuna):
+        a = ZunaAdapter()
+        loaded = a.load_model(ZUNA_BASE_ID)
+        with pytest.raises(ValueError, match="electrode_names"):
+            a.extract_features(
+                loaded, {"eeg": np.zeros((1, 3, ZUNA_FINE_TIME_PTS),
+                                         dtype=np.float32)}
+            )
+
+    def test_positions_from_gsn_montage(self):
+        # Real MNE montage resolution (skips if mne unavailable). Verifies our
+        # name lookup returns distinct, in-range coordinates for GSN labels.
+        pytest.importorskip("mne")
+        from jaxoccoli.eeg_fm import _zuna_chan_positions
+        pos = _zuna_chan_positions(["E1", "E50", "E101"])
+        assert pos.shape == (3, 3)
+        # Distinct electrodes -> distinct positions, all within head radius.
+        assert not np.allclose(pos[0], pos[1])
+        assert np.abs(pos).max() < 0.13
 
 
 # ===========================================================================

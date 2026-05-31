@@ -287,16 +287,20 @@ def _shim_jaxoccoli_package():
 def build_adapter(model_id: str, layer: int):
     """Return a loaded ``HFModelAdapter`` and its loaded model handle."""
     _shim_jaxoccoli_package()
-    from jaxoccoli.eeg_fm import REVEAdapter, LaBraMAdapter, REVE_BASE_ID
+    from jaxoccoli.eeg_fm import (
+        REVEAdapter, LaBraMAdapter, ZunaAdapter, REVE_BASE_ID, ZUNA_BASE_ID,
+    )
 
     if model_id == REVE_BASE_ID:
         adapter = REVEAdapter(layer=layer)
+    elif model_id == ZUNA_BASE_ID:
+        adapter = ZunaAdapter(layer=layer)
     elif model_id.startswith("labram"):
         adapter = LaBraMAdapter(layer=layer)
     else:
         raise ValueError(
             f"Unknown EEG FM model_id={model_id!r}. Supported: "
-            f"'{REVE_BASE_ID}', 'labram-base'"
+            f"'{REVE_BASE_ID}', '{ZUNA_BASE_ID}', 'labram-base'"
         )
     loaded = adapter.load_model(model_id)
     return adapter, loaded

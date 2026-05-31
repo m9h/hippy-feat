@@ -370,6 +370,303 @@ class LaBraMAdapter(HFModelAdapter):
 
 
 # ---------------------------------------------------------------------------
+# ZUNA adapter
+# ---------------------------------------------------------------------------
+
+ZUNA_BASE_ID = "mhough/zuna-base"
+
+# ZUNA (Zyphra) hyper-parameters baked into the public ``zuna-base`` config.
+# Kept as module constants so the tokenizer helpers below stay pure/testable
+# without instantiating the (heavyweight, trust_remote_code) HF model.
+ZUNA_INPUT_DIM = 32          # config.input_dim == num_fine_time_pts (tf)
+ZUNA_FINE_TIME_PTS = 32      # samples per token along fine-time axis
+ZUNA_DOWNSAMPLE_FACTOR = 1   # config.encoder_latent_downsample_factor
+ZUNA_DIM = 1024              # config.dim — the residual-stream width we hook
+ZUNA_SFREQ = 256             # ZUNA was pretrained at 256 Hz
+# Discrete-position scheme from BCIDatasetArgs (the "v5"/"thirteens" dataset):
+# bin each xyz coordinate (metres) into ``num_bins`` cells over [-extreme, +extreme].
+ZUNA_POS_NUM_BINS = 100
+ZUNA_POS_EXTREME = 0.13
+
+
+def _zuna_discretize_chan_pos(chan_pos: np.ndarray,
+                              num_bins: int = ZUNA_POS_NUM_BINS,
+                              extreme: float = ZUNA_POS_EXTREME) -> np.ndarray:
+    """Discretise continuous (x,y,z) electrode positions (metres) into integer
+    RoPE bins, replicating ``eeg_data.discretize_chan_pos`` with the v5
+    "thirteens" extremes ([-0.13, 0.13] on every axis, ``num_bins`` cells).
+    """
+    chan_pos = np.asarray(chan_pos, dtype=np.float64)
+    norm = (chan_pos - (-extreme)) / (extreme - (-extreme))
+    disc = np.floor(norm * num_bins).astype(np.int64)
+    return np.clip(disc, 0, num_bins - 1)
+
+
+def _zuna_chan_positions(ch_names: list[str]) -> np.ndarray:
+    """3D positions (metres) for HBN's GSN-HydroCel-128 montage, by channel name.
+
+    HBN was recorded on an EGI/Philips GSN-HydroCel-128 net; we source the
+    canonical electrode geometry from MNE's standard montage. Channels we
+    can't resolve (rare label mismatches) fall back to the head centre
+    (which discretises to the middle bin), matching ZUNA's all-zero
+    dummy-position convention for unknown sensors.
+    """
+    try:
+        import mne
+    except ImportError as e:  # pragma: no cover — present alongside braindecode
+        raise ImportError(
+            "ZunaAdapter needs MNE to resolve GSN-HydroCel-128 electrode "
+            "positions. It ships with braindecode; install 'mne'."
+        ) from e
+
+    montage = mne.channels.make_standard_montage("GSN-HydroCel-128")
+    ch_pos = montage.get_positions()["ch_pos"]  # name -> (3,) metres
+    # Build a case-insensitive lookup so "e12"/"E12"/"EEG E12" all resolve.
+    lower = {k.lower(): v for k, v in ch_pos.items()}
+
+    out = np.zeros((len(ch_names), 3), dtype=np.float64)
+    for i, name in enumerate(ch_names):
+        key = str(name).strip().lower()
+        if key in lower:
+            out[i] = lower[key]
+        elif key.replace("eeg ", "") in lower:
+            out[i] = lower[key.replace("eeg ", "")]
+        # else: leave at (0,0,0) -> centre bin
+    return out
+
+
+def _zuna_tokenize(eeg: np.ndarray, chan_pos_discrete: np.ndarray,
+                   tf: int = ZUNA_FINE_TIME_PTS):
+    """Chop one (C, T) window into ZUNA's channel-together token layout.
+
+    Mirrors ``eeg_data.chop_and_reshape_signals`` with ``use_coarse_time="B"``
+    (the public checkpoint's layout): each (channel, coarse-time) pair becomes
+    one token whose feature axis is ``tf`` fine-time samples. Tokens are
+    ordered channel-major: [ch0·tc0, ch0·tc1, …, ch0·tc(K-1), ch1·tc0, …].
+
+    Returns
+    -------
+    encoder_input    : (seqlen, tf)  float32
+    t_coarse         : (seqlen, 1)   int64   — coarse-time index per token
+    chan_pos_discr   : (seqlen, 3)   int64   — per-token discrete xyz bins
+    tc               : int                    — coarse-time steps (= T // tf)
+    """
+    C, T = eeg.shape
+    if T % tf != 0:
+        raise ValueError(
+            f"ZUNA tokeniser needs T divisible by {tf} fine-time samples; got "
+            f"T={T}. At 256 Hz a 5 s window is 1280 samples (=40·{tf}). Pass "
+            f"--target-sfreq {ZUNA_SFREQ} to the extraction pipeline."
+        )
+    tc = T // tf
+    encoder_input = eeg.reshape(C, tc, tf).reshape(C * tc, tf)
+    t_coarse = np.tile(np.arange(tc), C).reshape(-1, 1)
+    chan_pos_discr = np.repeat(chan_pos_discrete, tc, axis=0)
+    return (encoder_input.astype(np.float32), t_coarse,
+            chan_pos_discr.astype(np.int64), tc)
+
+
+def _zuna_strip_registers_and_pool(h: np.ndarray, n_chans: int, tc: int,
+                                   df: int = ZUNA_DOWNSAMPLE_FACTOR) -> np.ndarray:
+    """Reduce a hooked encoder-block output to per-channel vectors.
+
+    ZUNA's encoder interleaves one *register* token in front of every group
+    of ``df`` real tokens (``EncoderTransformer._interleave_registers``), so a
+    block's residual stream has ``num_groups·(df+1)`` tokens. We drop the
+    registers, trim padding back to ``n_chans·tc`` real tokens, then mean-pool
+    over the ``tc`` coarse-time steps within each channel.
+
+    Parameters
+    ----------
+    h  : (B, L, D) block output, L == num_groups·(df+1).
+
+    Returns
+    -------
+    (B, n_chans, D) — one pooled vector per channel.
+    """
+    h = np.asarray(h)
+    if h.ndim == 2:
+        h = h[None]
+    B, L, D = h.shape
+    group = df + 1
+    num_groups = L // group
+    h = h[:, :num_groups * group, :].reshape(B, num_groups, group, D)
+    real = h[:, :, 1:, :].reshape(B, num_groups * df, D)   # drop register at idx 0
+    seqlen = n_chans * tc
+    real = real[:, :seqlen, :].reshape(B, n_chans, tc, D)
+    return real.mean(axis=2)
+
+
+class ZunaAdapter(HFModelAdapter):
+    """Adapter for ZUNA (Zyphra ``mhough/zuna-base``) — a 382 M masked-diffusion
+    EEG autoencoder. We expose its **encoder** as an SAE feature source.
+
+    Why the encoder block residual (``dim=1024``) and not ``ZunaModel.encode``?
+    ``encode`` returns the 32-d bottleneck latent — too narrow for dictionary
+    learning. WeightWatcher analysis (``analyze_zuna_weightwatcher.py``) found
+    every one of the 16 encoder blocks healthy (α≈2.5–3.2, 1.8 % under-trained),
+    so the rich 1024-d residual stream is the right hook target. A forward hook
+    on ``model.encoder.layers[layer]`` captures it.
+
+    Tokenisation (replicated from ``zuna…/eeg_data.py``): each window is chopped
+    into ``tf=32``-sample fine-time tokens in channel-together order; 4D-RoPE is
+    driven by discrete electrode positions (GSN-HydroCel-128, binned over
+    [-0.13, 0.13] m) plus a coarse-time index. The encoder also interleaves
+    register tokens, which we strip before pooling.
+
+    Output: ``(B, n_chans, 1024)`` — the block residual mean-pooled over
+    coarse-time within each channel. ``n_per_window`` therefore equals the
+    montage channel count.
+
+    Caveats (deviations from ZUNA's exact training recipe):
+
+      * **Normalisation.** The extraction pipeline z-scores per channel and
+        clamps ±15 before calling us; ZUNA trained on ``signal / data_norm``
+        (a fixed global scale) + clamp. Per-channel z-score is a reasonable,
+        in-distribution-ish standardisation but is a known deviation.
+      * **Positions.** We use the *nominal* GSN-HydroCel-128 geometry, not
+        per-subject digitised coordinates.
+      * **Batch.** ZUNA's ``encode`` assumes B=1 packed sequences
+        (``do_idx.squeeze(0)``), so we loop over the batch and run one window
+        at a time.
+
+    Parameters
+    ----------
+    layer     : encoder block index to hook (default -1 = last block).
+    hook_path : dotted path to the block list on the ZunaModel
+                (default ``model.encoder.layers``).
+    device    : "cuda" or "cpu". Defaults to cuda if available.
+    """
+
+    def __init__(self, *, layer: int = -1,
+                 hook_path: str = "model.encoder.layers",
+                 device: str | None = None):
+        self.layer = layer
+        self.hook_path = hook_path
+        self._device = device
+        self._d_model: int | None = None
+        self._n_blocks: int | None = None
+        self._captured = None
+        self._hook_handle = None
+        self._pos_cache: dict[tuple, np.ndarray] = {}
+
+    def load_model(self, model_id: str, cache_dir: str | None = None,
+                   **kwargs) -> Any:
+        try:
+            import torch
+            from transformers import AutoModel
+        except ImportError as e:
+            raise ImportError(
+                "ZunaAdapter requires torch + transformers, plus the 'zuna' "
+                "package and its lingua deps on PYTHONPATH (trust_remote_code "
+                "custom modules). See scripts/extract_eeg_fm_acts.sbatch."
+            ) from e
+
+        if self._device is None:
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        model = AutoModel.from_pretrained(
+            model_id, trust_remote_code=True, cache_dir=cache_dir,
+        ).to(self._device).eval()
+
+        cfg = getattr(model, "config", None)
+        self._d_model = getattr(cfg, "dim", None) or ZUNA_DIM
+        self._n_blocks = getattr(cfg, "n_layers", None)
+
+        try:
+            block_list = _resolve_dotted(model, self.hook_path)
+            target = block_list[self.layer]
+            if self._n_blocks is None:
+                self._n_blocks = len(block_list)
+        except (AttributeError, IndexError) as e:
+            raise RuntimeError(
+                f"Could not hook layer {self.layer} at '{self.hook_path}'. "
+                f"Inspect ZUNA's module layout with `print(model)` and pass a "
+                f"different `hook_path` to ZunaAdapter."
+            ) from e
+
+        self._hook_handle = target.register_forward_hook(self._capture_hook)
+        return model
+
+    def _capture_hook(self, module, inputs, output):
+        if isinstance(output, tuple):
+            output = output[0]
+        try:
+            self._captured = output.detach().float().cpu().numpy()
+        except AttributeError:
+            self._captured = np.asarray(output)
+
+    def extract_features(self, model, inputs: dict, **kwargs) -> np.ndarray:
+        try:
+            import torch
+        except ImportError as e:  # pragma: no cover — caught at load_model
+            raise ImportError("torch not available") from e
+
+        if "eeg" not in inputs:
+            raise ValueError("ZUNA inputs dict must contain 'eeg' (B,C,T)")
+        ch_names = inputs.get("electrode_names") or inputs.get("ch_names")
+        if ch_names is None:
+            raise ValueError(
+                "ZUNA inputs dict must contain 'electrode_names' (or "
+                "'ch_names') so 4D-RoPE positions can be resolved"
+            )
+        ch_names = list(ch_names)
+
+        eeg_np = np.asarray(inputs["eeg"], dtype=np.float32)
+        if eeg_np.ndim == 2:
+            eeg_np = eeg_np[None]
+        B, C, T = eeg_np.shape
+
+        key = tuple(ch_names)
+        if key not in self._pos_cache:
+            self._pos_cache[key] = _zuna_discretize_chan_pos(
+                _zuna_chan_positions(ch_names)
+            )
+        chan_pos_discrete = self._pos_cache[key]
+
+        pooled = []
+        for b in range(B):
+            enc_in, t_coarse, cpd, tc = _zuna_tokenize(eeg_np[b], chan_pos_discrete)
+            seqlen = enc_in.shape[0]
+            enc_in_t = torch.from_numpy(enc_in).to(self._device)
+            t_coarse_t = torch.from_numpy(t_coarse).to(self._device)[None]      # (1,seqlen,1)
+            cpd_t = torch.from_numpy(cpd).to(self._device)[None]                # (1,seqlen,3)
+            seq_lens_t = torch.tensor([seqlen], device=self._device)
+
+            self._captured = None
+            with torch.no_grad():
+                model.encode(
+                    encoder_input=enc_in_t,
+                    seq_lens=seq_lens_t,
+                    t_coarse=t_coarse_t,
+                    chan_pos_discrete=cpd_t,
+                )
+            if self._captured is None:
+                raise RuntimeError(
+                    f"ZUNA forward hook at '{self.hook_path}'[{self.layer}] did "
+                    f"not fire — check the hook path against `print(model)`."
+                )
+            pooled.append(
+                _zuna_strip_registers_and_pool(self._captured, C, tc)[0]
+            )
+
+        return np.stack(pooled, axis=0).astype(np.float32)   # (B, C, dim)
+
+    @property
+    def output_dim(self) -> int:
+        if self._d_model is None:
+            raise RuntimeError(
+                "output_dim is only known after load_model — ZUNA's hidden "
+                "size is read from the model config at load time."
+            )
+        return int(self._d_model)
+
+    @property
+    def output_space(self) -> str:
+        return "zuna-encoder-hidden-states"
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 # IDs are registered without instantiating the adapter — callers customise
@@ -379,3 +676,4 @@ class LaBraMAdapter(HFModelAdapter):
 
 register_adapter(REVE_BASE_ID, REVEAdapter)
 register_adapter(LABRAM_DEFAULT_ID, LaBraMAdapter)
+register_adapter(ZUNA_BASE_ID, ZunaAdapter)

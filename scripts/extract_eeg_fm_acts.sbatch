@@ -17,9 +17,11 @@
 #   RELEASE=1 FULL=1 LAYER=8 sbatch scripts/extract_eeg_fm_acts.sbatch  # HBN R1 full (136 subj), block 8
 #   RELEASE=3 sbatch scripts/extract_eeg_fm_acts.sbatch              # HBN R3 MINI
 #   MODEL=labram-base sbatch scripts/extract_eeg_fm_acts.sbatch
+#   MODEL=mhough/zuna-base LAYER=-1 sbatch scripts/extract_eeg_fm_acts.sbatch  # ZUNA encoder, 256 Hz
 #
-# Pre-req: accept the brain-bzh/reve-base Responsible Use Agreement on HF
-# and have HF_TOKEN in ~/.cache/huggingface/token.
+# Pre-req: REVE only — accept the brain-bzh/reve-base Responsible Use
+# Agreement on HF and have HF_TOKEN in ~/.cache/huggingface/token. ZUNA
+# (mhough/zuna-base) is public; no token needed.
 
 set -euo pipefail
 
@@ -37,6 +39,20 @@ TASK=${TASK:-RestingState}
 WIN_SECONDS=${WIN_SECONDS:-5}
 BATCH_SIZE=${BATCH_SIZE:-8}
 MAX_WINDOWS=${MAX_WINDOWS:-}            # empty = unlimited
+
+# Model-specific knobs. REVE/LaBraM run at 200 Hz; ZUNA was pretrained at
+# 256 Hz and its tokeniser needs T divisible by 32 (a 5 s window = 1280
+# samples = 40·32). ZUNA's trust_remote_code module imports the ``zuna``
+# package + its --target-installed deps from zunalibs, so that goes on
+# PYTHONPATH for zuna runs only.
+ZUNALIBS=/data/derivatives/eeg_sae/zunalibs
+if [[ "$MODEL" == "mhough/zuna-base" ]]; then
+    TARGET_SFREQ=${TARGET_SFREQ:-256}
+    EXTRA_PYTHONPATH=":$ZUNALIBS"
+else
+    TARGET_SFREQ=${TARGET_SFREQ:-200}
+    EXTRA_PYTHONPATH=""
+fi
 FULL_FLAG=""
 DATASET_TAG="EEG2025R${RELEASE}MINI"
 if [[ "${FULL:-0}" == "1" ]]; then
@@ -54,15 +70,19 @@ mkdir -p "$OUT_DIR/logs" "$OUT_DIR/acts" "$CACHE_DIR" "$HF_CACHE"
 if [[ ! -f "$SIF" ]]; then
     echo "ERROR: $SIF not found." >&2; exit 1
 fi
-if [[ ! -s "$HF_TOKEN_FILE" ]]; then
-    echo "ERROR: HF token not at $HF_TOKEN_FILE — needed for REVE gated model." >&2
-    exit 1
+# Gated-model token is REVE-only; ZUNA + LaBraM load without it.
+HF_TOKEN=""
+if [[ "$MODEL" == brain-bzh/* ]]; then
+    if [[ ! -s "$HF_TOKEN_FILE" ]]; then
+        echo "ERROR: HF token not at $HF_TOKEN_FILE — needed for REVE gated model." >&2
+        exit 1
+    fi
+    HF_TOKEN=$(cat "$HF_TOKEN_FILE")
 fi
-HF_TOKEN=$(cat "$HF_TOKEN_FILE")
 
 echo "Job:    extract_eeg_fm_acts.sbatch"
 echo "Model:  $MODEL  layer=$LAYER"
-echo "Data:   ${DATASET_TAG} / task=$TASK   ${WIN_SECONDS}s @ 200Hz"
+echo "Data:   ${DATASET_TAG} / task=$TASK   ${WIN_SECONDS}s @ ${TARGET_SFREQ}Hz"
 echo "Out:    $OUT_NPZ"
 echo "GPU:    $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
 
@@ -77,6 +97,7 @@ PY_CMD=( python scripts/extract_eeg_fm_acts.py
     --task "$TASK"
     --cache-dir "$CACHE_DIR"
     --win-seconds "$WIN_SECONDS"
+    --target-sfreq "$TARGET_SFREQ"
     --batch-size "$BATCH_SIZE"
     --out "$OUT_NPZ"
 )
@@ -90,7 +111,7 @@ PY_CMD=( python scripts/extract_eeg_fm_acts.py
 apptainer exec --nv --no-init \
     --env HF_TOKEN="$HF_TOKEN" \
     --env HF_HOME="$HF_CACHE" \
-    --env PYTHONPATH="$PROJECT_ROOT" \
+    --env PYTHONPATH="$PROJECT_ROOT$EXTRA_PYTHONPATH" \
     -B "$PROJECT_ROOT":"$PROJECT_ROOT" \
     -B /data:/data \
     -B "$CACHE_DIR":"$CACHE_DIR" \
