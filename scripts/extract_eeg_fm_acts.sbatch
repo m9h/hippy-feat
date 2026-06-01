@@ -108,6 +108,19 @@ PY_CMD=( python scripts/extract_eeg_fm_acts.py
 #   scripts hang (NGC license / nvidia-cli probe). Bypassing them is safe
 #   because we pass HF_TOKEN/HF_HOME/PYTHONPATH explicitly via --env.
 # -B /data:/data : apptainer doesn't auto-bind NFS paths.
+#
+# Triton/libcuda bind: ZUNA's encoder runs flex_attention, which JIT-compiles a
+# Triton kernel and locates the CUDA *driver* via `ldconfig`. With --no-init the
+# NGC entrypoint never runs `ldconfig`, so the cache still points at the renamed
+# /usr/local/cuda/compat/lib/libcuda.so.1 (gone), and Triton's stale-but-nonempty
+# dir list makes it skip its LD_LIBRARY_PATH fallback → "libcuda.so cannot found!"
+# (jobs 1517). Bind the host driver over that stale path so the check passes.
+# Harmless for REVE/LaBraM (same driver torch already uses); only ZUNA needs it.
+LIBCUDA_BIND=()
+HOST_LIBCUDA=$(readlink -f /usr/lib/aarch64-linux-gnu/libcuda.so.1 2>/dev/null || true)
+if [[ -n "$HOST_LIBCUDA" && -e "$HOST_LIBCUDA" ]]; then
+    LIBCUDA_BIND=( -B "$HOST_LIBCUDA":/usr/local/cuda/compat/lib/libcuda.so.1 )
+fi
 apptainer exec --nv --no-init \
     --env HF_TOKEN="$HF_TOKEN" \
     --env HF_HOME="$HF_CACHE" \
@@ -117,6 +130,7 @@ apptainer exec --nv --no-init \
     -B "$CACHE_DIR":"$CACHE_DIR" \
     -B "$OUT_DIR":"$OUT_DIR" \
     -B "$HF_CACHE":"$HF_CACHE" \
+    "${LIBCUDA_BIND[@]}" \
     "$SIF" bash -c '
         set -euo pipefail
         # NO pip install. pip install --user historically pulled torch +

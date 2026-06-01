@@ -28,6 +28,8 @@ from jaxoccoli.eeg_fm import (
     _zuna_discretize_chan_pos,
     _zuna_tokenize,
     _zuna_strip_registers_and_pool,
+    _zuna_ensure_rope_capacity,
+    _zuna_precompute_freqs_cis,
     ZUNA_FINE_TIME_PTS,
     ZUNA_POS_NUM_BINS,
 )
@@ -410,6 +412,56 @@ class TestZunaHelpers:
             assert np.allclose(pooled[0, ch], expected)
         # Registers (-1) must not leak into the pooled result.
         assert (pooled != -1.0).all()
+
+
+class TestZunaRopeCapacity:
+    """The 4D-RoPE table must cover position bins 0..99; the checkpoint ships
+    a 50-row table (max_seqlen=50), which previously asserted on the GPU."""
+
+    class _StubRope:
+        def __init__(self, freqs_cis, head_dim=64, rope_dim=4, theta=10000.0):
+            self.freqs_cis = freqs_cis
+            self.head_dim = head_dim
+            self.rope_dim = rope_dim
+            self.theta = theta
+            self.max_seqlen = freqs_cis.shape[0]
+
+        def register_buffer(self, name, value, persistent=True):
+            setattr(self, name, value)
+
+    class _StubTransformer:
+        """Mirrors ZUNA's BaseTransformer: owns rope_embeddings + max_seqlen,
+        the latter being the value that slices the table before the gather."""
+        def __init__(self, rope, max_seqlen):
+            self.rope_embeddings = rope
+            self.max_seqlen = max_seqlen
+
+    def test_noop_when_already_large_enough(self):
+        # Pure path: no torch needed when capacity already suffices.
+        big = np.zeros((200, 8, 2, 2))
+        rope = self._StubRope(big)
+        tr = self._StubTransformer(rope, max_seqlen=200)
+        _zuna_ensure_rope_capacity(tr, 100)
+        assert rope.freqs_cis is big          # untouched
+        assert tr.max_seqlen == 200
+
+    def test_grows_buffer_and_transformer_max_seqlen(self):
+        torch = pytest.importorskip("torch")
+        head_dim, rope_dim, theta = 64, 4, 10000.0
+        dim = head_dim // rope_dim
+        small = _zuna_precompute_freqs_cis(dim, 50, theta)
+        rope = self._StubRope(small, head_dim, rope_dim, theta)
+        tr = self._StubTransformer(rope, max_seqlen=50)
+        _zuna_ensure_rope_capacity(tr, 100)
+        assert rope.freqs_cis.shape[0] == 100
+        # Both the table and the slicing bound must grow, or the table is
+        # re-truncated to 50 before the position gather (the jobs-1515/1516 bug).
+        assert tr.max_seqlen == 100
+        assert rope.max_seqlen == 100
+        # Enlarging is loss-free: original rows are bit-identical.
+        assert torch.equal(rope.freqs_cis[:50], small)
+        full = _zuna_precompute_freqs_cis(dim, 100, theta)
+        assert torch.equal(rope.freqs_cis, full)
 
 
 # ===========================================================================

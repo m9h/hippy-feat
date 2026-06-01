@@ -387,6 +387,7 @@ ZUNA_SFREQ = 256             # ZUNA was pretrained at 256 Hz
 # bin each xyz coordinate (metres) into ``num_bins`` cells over [-extreme, +extreme].
 ZUNA_POS_NUM_BINS = 100
 ZUNA_POS_EXTREME = 0.13
+ZUNA_ROPE_THETA = 10000.0     # config.rope_theta — base for the RoPE freq table
 
 
 def _zuna_discretize_chan_pos(chan_pos: np.ndarray,
@@ -464,6 +465,55 @@ def _zuna_tokenize(eeg: np.ndarray, chan_pos_discrete: np.ndarray,
     chan_pos_discr = np.repeat(chan_pos_discrete, tc, axis=0)
     return (encoder_input.astype(np.float32), t_coarse,
             chan_pos_discr.astype(np.int64), tc)
+
+
+def _zuna_precompute_freqs_cis(dim: int, end: int,
+                               theta: float = ZUNA_ROPE_THETA):
+    """Recreate ``lingua.transformer.precompute_freqs_cis`` exactly.
+
+    Returns the (end, dim//2, 2, 2) rotation table. Each row ``p`` is a pure
+    function of ``p`` (``outer(arange(end), freqs)``), so a table built for a
+    larger ``end`` is bit-identical to the original on rows it already covered
+    and simply extends it — the property we rely on to enlarge the buffer.
+    """
+    import torch
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end)
+    freqs = torch.outer(t, freqs).float()
+    cos, sin = freqs.cos(), freqs.sin()
+    return torch.stack((cos, -sin, sin, cos), dim=-1).view(*freqs.size(), 2, 2)
+
+
+def _zuna_ensure_rope_capacity(transformer, needed_len: int) -> None:
+    """Grow the encoder's RoPE table to cover ``needed_len`` position rows.
+
+    ZUNA's 4D-RoPE indexes ``freqs_cis`` by discretised position bins
+    (0..ZUNA_POS_NUM_BINS-1) and coarse-time, but the public checkpoint sizes
+    the table at ``config.max_seqlen`` (50) — smaller than the 100 position
+    bins. Two things conspire: ``BaseTransformer.forward`` slices
+    ``rope.freqs_cis[0:self.max_seqlen]`` *before* the gather, and the buffer
+    itself only has 50 rows. So both the parent transformer's ``max_seqlen``
+    and the buffer must grow, or indexing past row 49 triggers a CUDA
+    device-side assert (jobs 1514/1515/1516). The buffer is non-persistent and
+    rebuilt deterministically per-row, so enlarging it is loss-free and
+    reproduces the embeddings ZUNA's own ``num_bins=100`` pipeline assumes.
+    """
+    rope = getattr(transformer, "rope_embeddings", None)
+    if rope is None:
+        return
+    cur = rope.freqs_cis
+    if cur.shape[0] < needed_len:
+        head_dim = int(getattr(rope, "head_dim"))
+        rope_dim = int(getattr(rope, "rope_dim"))
+        theta = float(getattr(rope, "theta", ZUNA_ROPE_THETA))
+        new = _zuna_precompute_freqs_cis(head_dim // rope_dim, needed_len, theta)
+        rope.register_buffer("freqs_cis", new.to(cur.device, cur.dtype),
+                             persistent=False)
+        rope.max_seqlen = needed_len
+    # The slice that re-truncates the table is driven by the *transformer's*
+    # max_seqlen, not the rope module's — bump it too.
+    if int(getattr(transformer, "max_seqlen", 0)) < needed_len:
+        transformer.max_seqlen = needed_len
 
 
 def _zuna_strip_registers_and_pool(h: np.ndarray, n_chans: int, tc: int,
@@ -549,6 +599,7 @@ class ZunaAdapter(HFModelAdapter):
         self._captured = None
         self._hook_handle = None
         self._pos_cache: dict[tuple, np.ndarray] = {}
+        self._enc_transformer = None
 
     def load_model(self, model_id: str, cache_dir: str | None = None,
                    **kwargs) -> Any:
@@ -586,6 +637,16 @@ class ZunaAdapter(HFModelAdapter):
             ) from e
 
         self._hook_handle = target.register_forward_hook(self._capture_hook)
+
+        # 4D-RoPE indexes the encoder's freqs_cis table by 0..99 position bins,
+        # but the checkpoint sizes it at max_seqlen=50. Grab the encoder
+        # transformer so extract_features can enlarge its RoPE table on demand
+        # (see _zuna_ensure_rope_capacity).
+        enc_path = self.hook_path.rsplit(".", 1)[0]   # "...encoder.layers" -> "...encoder"
+        try:
+            self._enc_transformer = _resolve_dotted(model, enc_path)
+        except AttributeError:
+            self._enc_transformer = None
         return model
 
     def _capture_hook(self, module, inputs, output):
@@ -632,6 +693,13 @@ class ZunaAdapter(HFModelAdapter):
             t_coarse_t = torch.from_numpy(t_coarse).to(self._device)[None]      # (1,seqlen,1)
             cpd_t = torch.from_numpy(cpd).to(self._device)[None]                # (1,seqlen,3)
             seq_lens_t = torch.tensor([seqlen], device=self._device)
+
+            # tok_idx = cat(chan_pos_discrete, t_coarse); the encoder gathers
+            # rows of freqs_cis at every value, so the table must cover the
+            # largest index used by this window.
+            if self._enc_transformer is not None:
+                needed = int(max(cpd.max(initial=0), t_coarse.max(initial=0))) + 1
+                _zuna_ensure_rope_capacity(self._enc_transformer, needed)
 
             self._captured = None
             with torch.no_grad():
