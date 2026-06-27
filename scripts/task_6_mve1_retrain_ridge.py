@@ -2,12 +2,13 @@
 """Task 6 MVE-1: retrain only the sub-005 ridge layer of MindEye 2 with
 posterior variance from Variant G as part of the input.
 
-Tests three flavors of the 2792-voxel → 1024-latent adapter, all with the
+Tests four flavors of the 2792-voxel → 1024-latent adapter, all with the
 backbone (BrainNetwork) FROZEN at paper checkpoint weights:
 
     baseline       Linear(2792,  1024)        input = β_mean
     var_weighted   Linear(2792,  1024)        input = β_mean / sqrt(β_var + ε)
     concat         Linear(5584,  1024)        input = [β_mean, log β_var]
+    mlp_concat     MLP(5584, 1024, 1024)      input = [β_mean, log β_var]
 
 Train on Variant G output from sub-005 ses-01 + ses-02 (1540 trials).
 Targets: OpenCLIP ViT-bigG/14 token embeddings of each trial's stimulus
@@ -72,7 +73,7 @@ def make_input(flavor: str, betas: np.ndarray, vars_: np.ndarray) -> np.ndarray:
         return voxelwise_zscore_full(betas)
     if flavor == "var_weighted":
         return voxelwise_zscore_full(betas / np.sqrt(vars_ + EPS))
-    if flavor == "concat":
+    if flavor in ("concat", "mlp_concat"):
         a = voxelwise_zscore_full(betas)
         b = voxelwise_zscore_full(np.log(vars_ + EPS))
         return np.concatenate([a, b], axis=1)
@@ -108,9 +109,31 @@ def assemble_targets(trial_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.stack(targets), np.asarray(valid_idx)
 
 
-def init_ridge(flavor: str, paper_ridge: nn.Linear) -> nn.Linear:
-    """Initialize a fresh ridge layer; copy paper weights when shapes align."""
-    in_dim = 2 * N_VOXELS if flavor == "concat" else N_VOXELS
+class MLPRidge(nn.Module):
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def init_ridge(flavor: str, paper_ridge: nn.Linear) -> nn.Module:
+    """Initialize a fresh ridge layer/MLP; copy paper weights when shapes align."""
+    in_dim = 2 * N_VOXELS if flavor in ("concat", "mlp_concat") else N_VOXELS
+    if flavor == "mlp_concat":
+        layer = MLPRidge(in_dim, HIDDEN_DIM, HIDDEN_DIM)
+        with torch.no_grad():
+            # Initialize first half from paper, second half (log-var part) at zero
+            layer.net[0].weight[:, :N_VOXELS].copy_(paper_ridge.weight)
+            layer.net[0].weight[:, N_VOXELS:].zero_()
+            layer.net[0].bias.copy_(paper_ridge.bias)
+        return layer
+
     layer = nn.Linear(in_dim, HIDDEN_DIM)
     if flavor in ("baseline", "var_weighted"):
         with torch.no_grad():
@@ -229,7 +252,7 @@ def train_one_flavor(flavor: str, X_train: np.ndarray, Y_train: np.ndarray,
     return new_ridge
 
 
-def evaluate(flavor: str, ridge: nn.Linear, X_test: np.ndarray,
+def evaluate(flavor: str, ridge: nn.Module, X_test: np.ndarray,
              trial_idx: np.ndarray, gt_test: np.ndarray, model: nn.Module,
              device: str) -> dict:
     Xt = torch.from_numpy(X_test.astype(np.float32)).to(device)
@@ -260,7 +283,7 @@ def evaluate(flavor: str, ridge: nn.Linear, X_test: np.ndarray,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--flavors", nargs="+",
-                    default=["baseline", "var_weighted", "concat"])
+                    default=["baseline", "var_weighted", "concat", "mlp_concat"])
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -328,7 +351,7 @@ def main():
                                  n_epochs=args.epochs, batch_size=args.batch_size,
                                  lr=args.lr, loss_kind=args.loss)
         torch.save({"state_dict": ridge.state_dict(),
-                    "flavor": flavor, "input_dim": ridge.in_features,
+                    "flavor": flavor, "input_dim": N_VOXELS * 2 if "concat" in flavor else N_VOXELS,
                     "epochs": args.epochs, "lr": args.lr},
                    OUT_DIR / f"{flavor}.pth")
         m = evaluate(flavor, ridge, test_xs_per_flavor[flavor], trial_idx,

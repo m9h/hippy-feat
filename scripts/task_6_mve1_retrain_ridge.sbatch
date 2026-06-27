@@ -29,6 +29,7 @@ if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
 fi
 
 docker run --rm --gpus all \
+    --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
     -v /home/mhough:/home/mhough \
     -v /data:/data \
     -w /home/mhough/dev/hippy-feat \
