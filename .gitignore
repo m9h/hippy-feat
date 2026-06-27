@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 .agent/
 .claude/
+.jax_cache/
 
 # Data files (large, not for repo)
 data/
