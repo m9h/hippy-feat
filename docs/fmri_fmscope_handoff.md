@@ -26,19 +26,19 @@ exactly FMScope's native regime.
 
 ## Representations to audit (in increasing interest)
 1. **nsdgeneral-masked betas** (per-trial voxel patterns) — the raw fMRI representation.
-2. **MindEye embedding** (ridge/CLIP-aligned) — `scripts/mindeye_retrieval_eval.py`,
-   `run_mindeye_inference.py`.
+2. **MindEye embedding** (ridge/CLIP-aligned) — `/home/mhough/dev/hippy-feat/scripts/mindeye_retrieval_eval.py`,
+   `/home/mhough/dev/hippy-feat/scripts/run_mindeye_inference.py`.
 3. **fmri-FM latent** (flat-map ViT-MAE, arXiv:2510.13768) — the fmri-fm agent's own model;
    the most interesting target (does the FM latent carry *more or less* subject identity than
    raw betas?).
 
 ## Existing scaffold to reuse (hippy-feat)
-- `scripts/nsd_multisubject_dimest.py` — **already loads** nsdgeneral-masked betas for all 8
+- `/home/mhough/dev/hippy-feat/scripts/nsd_multisubject_dimest.py` — **already loads** nsdgeneral-masked betas for all 8
   subjects + runs MELODIC/eigenspectrum dimensionality. Loader + representation done; bolt the
   erasure on.
-- `jaxoccoli/nsd.py` — RSA (`rdm_from_betas`, `compare_rdms`), noise ceiling, category
+- `/home/mhough/dev/hippy-feat/jaxoccoli/nsd.py` — RSA (`rdm_from_betas`, `compare_rdms`), noise ceiling, category
   selectivity. Cross-subject RSA on shared-1000 is directly relevant.
-- `scripts/mindeye_retrieval_eval.py` — the image-retrieval metric (the "performance" to audit).
+- `/home/mhough/dev/hippy-feat/scripts/mindeye_retrieval_eval.py` — the image-retrieval metric (the "performance" to audit).
 
 ## Method (port FMScope)
 `subject_axis_erasure` / the audit cell are re-exported in emeg-fm
@@ -52,9 +52,9 @@ exactly FMScope's native regime.
 
 ## Principled choices (use the ecosystem, don't hardcode) — see `reference_donoho_rmt_wavelet_stack`
 - Representation rank → **Gavish–Donoho** (`smni-cmi gavish_donoho_rank` for the PCA/MIGP step;
-  Artoni-2018 true-rank for any ICA). `nsd_multisubject_dimest.py` already runs MELODIC dim —
+  Artoni-2018 true-rank for any ICA). `/home/mhough/dev/hippy-feat/scripts/nsd_multisubject_dimest.py` already runs MELODIC dim —
   reconcile MELODIC's estimate with the GD rank.
-- Beta/BOLD denoising → **NORDIC** (`jaxoccoli/nordic.py`, Marchenko–Pastur).
+- Beta/BOLD denoising → **NORDIC** (`/home/mhough/dev/hippy-feat/jaxoccoli/nordic.py`, Marchenko–Pastur).
 
 ## Data needs from the truenas agent
 - **Design mapping is ALREADY LOCAL:** `/data/3t/data/all_stimuli/nsd_stim_info_merged.csv` has
