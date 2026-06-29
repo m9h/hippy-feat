@@ -57,11 +57,16 @@ exactly FMScope's native regime.
 - Beta/BOLD denoising → **NORDIC** (`jaxoccoli/nordic.py`, Marchenko–Pastur).
 
 ## Data needs from the truenas agent
-- **NSD experiment design** (`nsd_expdesign.mat` / `nsd_stim_info_merged.csv`): the **shared-1000
-  image ids** + per-subject **trial → 73k-image** mapping. The betas are local; this mapping (to
-  identify shared images + match conditions across subjects) is the missing piece. *Confirm
-  whether it's already under `/data/3t/nsd_multisubject` or needs fetching.*
-- (Optional) MindEye checkpoints / precomputed fmri-FM embeddings if auditing those.
+- **Design mapping is ALREADY LOCAL:** `/data/3t/data/all_stimuli/nsd_stim_info_merged.csv` has
+  the **shared-1000 flag** + per-subject `subjectN_repK` trial indices ⇒ the trial→image mapping
+  + shared-image identification is solved *without a download*.
+- **MORE BETA SESSIONS are the real truenas need:** only sessions **01–03** are on `/data/3t`
+  (~2250 trials/subject), so the shared-1000 images seen by **all 8** subjects *within* those 3
+  sessions is a small subset. For a well-populated (subject × shared-image) factorial, supply
+  more NSD sessions per subject (ideally the full run, or enough for solid shared-1000
+  cross-subject coverage). **First check the shared-image overlap in sessions 01–03** (from the
+  stim_info csv) to size the download.
+- (Optional) MindEye checkpoints / precomputed fmri-FM embeddings if auditing those reps.
 
 ## Deliverable
 The fMRI-FMScope null-subject-variance ratio + erasure-survival on NSD shared-1000, per
