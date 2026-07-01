@@ -72,5 +72,11 @@ the denoise layer under these.
 - HBN cached: `/mnt/t9/reve_hbn_emb.npz`, `/mnt/t9/neoba_hbn_feats.npz`,
   `/mnt/t9/hbn_cc200_fc.npz`, `/mnt/t9/hbn_reve_ids.txt`, `/mnt/t9/hbn_cohort.txt`
 - HBN C-PAC BOLD volumes: FCP-INDI S3 `s3://fcp-indi/data/Projects/HBN/CPAC_preprocessed/`
-- Truenas needs: more NSD beta sessions (for fMRI-FMScope shared-image coverage);
-  open **simultaneous EEG-fMRI** datasets (for the priority EEG→fMRI-prediction task).
+- **LANDED (truenas → NAS `/data`, 2026-06-30):** simultaneous EEG-fMRI datasets at
+  **`/data/datasets/eeg_fmri/`** — `natview` (naturalistic viewing; `raw_data` +
+  `preproc_data` + `freesurfer`), `ds000116` (classic multimodal, per-subject `func/`),
+  `noddi`. **This UNBLOCKS the ★ EEG→fMRI-prediction task** (NeuroBOLT/Calhas need
+  *simultaneous* EEG-fMRI — natview is the standout). Extract REVE on the EEG side; the
+  fMRI side has BOLD + FreeSurfer.
+- Still pending from truenas: **more NSD beta sessions** — NSD is still only sessions
+  01-03 (`/data/3t/nsd_multisubject`), so fMRI-FMScope shared-image coverage stays thin.
