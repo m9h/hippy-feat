@@ -11,7 +11,14 @@ land on `/mnt/t9`.
 
 ---
 
-## ★ NEED D (CURRENT priority, 2026-07-02) — TUSZ v2.0.3 seizure corpus (epilepsy benchmark)
+## ✅ NEED D — DELIVERED 2026-07-03 (TUSZ v2.0.3 complete: 76 GB, 25241 files)
+All three official splits landed at `/data/datasets/tuh_eeg/tuh_eeg_seizure/v2.0.3/edf/`:
+train 4667 / dev 1832 / eval 865 recordings, each with its `.csv_bi` seizure annotation.
+(The truenas pull stalled mid-dev ~14:41; the fmri-fm/main agent restarted the resumable
+`-c -N` wget from the DGX at 15:33 → FINISHED 03:21. Epilepsy benchmark run in progress.)
+Original request kept below for record.
+
+## ★ NEED D (was CURRENT priority, 2026-07-02) — TUSZ v2.0.3 seizure corpus (epilepsy benchmark)
 
 For the **NeuroTechX-Atlas epilepsy section** ([[project_neurotechx_atlas]]). We already have
 **TUEG v2.0.2** (general corpus) at `/mnt/tank/shared/datasets/tuh_eeg/v2.0.2/`, but the epilepsy
